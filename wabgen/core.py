@@ -8,18 +8,22 @@ import copy
 import math
 import random
 import numpy as np
-import pymatgen as pmg
+from func_timeout import FunctionTimedOut
 from pymatgen.symmetry.analyzer import PointGroupAnalyzer as PGA
 from pymatgen.symmetry.groups import PointGroup as PymatPointGroup
 from pymatgen.core.structure import IMolecule
+from pymatgen.analysis.structure_matcher import StructureMatcher
+from pymatgen.alchemy.filters import RemoveDuplicatesFilter
+from pymatgen.io.ase import AseAtomsAdaptor
 from wabgen.utils.data import get_atomic_data
 from wabgen.utils.align import parallel, calc_R1, mol2site2
 from wabgen.utils.cell import UnitCell
 from wabgen.utils.data import read_db, write_db
 from wabgen.utils.group import generate_group
 from wabgen.utils import symm
-from wabgen.utils.makecell import make_cell, cell2conv
+from wabgen.utils.makecell import make_cell
 from wabgen.utils.radialpp_bfgs2 import push_apart as flex_push_apart
+from wabgen.utils.filter import test_mof_structure
 import wabgen.io
 
 
@@ -70,12 +74,27 @@ HMPointGroupSymbols = [
 "D_h"]  #37
 """
 
+metals = [
+   "Pb"
+]
+
+# Initializing the StructureMatcher
+matcher = StructureMatcher(
+    primitive_cell=True,
+    scale=True
+)
+
+# Create the RemoveDuplicatesFilter filter
+duplicate_filter = RemoveDuplicatesFilter(
+    structure_matcher=matcher,
+    symprec=1e-3
+)
+
 
 def read_placement_table(fname):
     """Read in the placement table, if it doesn't exist generate it."""
     path = fname
     if os.path.exists(path):
-        print("reading in placement table")
         f = open(fname, "r")
         text = f.read()
         text = text.splitlines()
@@ -131,8 +150,8 @@ def make_perm(dof_perm, fname, arg_dict):
    pressure = arg_dict["pressure"]
    noise = arg_dict["minsep_noise"]
    aenet_relax = arg_dict["aenet_relax"]
-   o_name = arg_dict["o_name"]
    Rot_dicts = arg_dict["Rot_dicts"]
+   Z_val = arg_dict["Z_val"]
 
    np.random.seed(None)
 
@@ -351,7 +370,9 @@ def make_perm(dof_perm, fname, arg_dict):
       sg_name = str(sg.name)
       sg_name = re.sub(r"/", "_", sg_name)
       f_name += "_"+sg_name
+      f_name += f"_Z_{Z_val}"
       f_name = add_hash(f_name, 8)
+
 
       try:
          if arg_dict["push_apart"] == "flexible":
@@ -380,35 +401,45 @@ def make_perm(dof_perm, fname, arg_dict):
       if arg_dict["return_cell"]:
          return True, cell
 
+      # H should always be define, often 0
+      print(f"writing res with P={P} and E={H}")
+      wabgen.io.write_res(f_name, cell, E=H, P=P)
+
+      # Testing filter distances
+      metal_center = set()
+      for at in cell.atoms:
+         if at.label in metals:
+            metal_center.add(at.label)
+
+      metal_center = "".join(list(metal_center))
+      try:
+         rejected = test_mof_structure(
+            f_name + ".res",
+            metal_center,
+            radius=5.00,
+            cutoff=3.28,
+            dist_min=1.90,
+         )
+      except FunctionTimedOut:
+         print("Function Timed Out. The file will be rejected")
+         rejected = True
+      
+      if rejected:
+         cmd = "rm -v " + f_name + ".res"
+         os.system(cmd)
+         continue
+
+      # Testing duplicates
+      # TODO
 
 
-      #actually write the file out
-      if form == "xsf":
-         if aenet_relax:
-            stress = aed["stress"]
-            Fs = aed["Fs"]
-         else:
-            stress=None
-            Fs = None
-         write_xsf(cell, f_name, energy=H, forces=Fs, stress=stress)
-      elif form == "cell":
-         #if here then writing the cell file
-         make_cell_file(cell,f_name+".cell")
-
-      elif form == "res":
-         #H should always be define, often 0
-         print(f"writing res with P={P} and E={H}")
-         wabgen.io.write_res(f_name, cell, E=H, P=P)
-      else:
-         f_name = f_name.split("/")[-1]
-         write_cif(cell, f_name + ".cif", 0.01)
       #now write to file origin.txt the f_name and its perm
       #move completed file to completed
       cmd = "mv " + f_name + "* ./completed/"
       print("cmd is", cmd)
       os.system(cmd)
-      print("writing out the perm")
-      wabgen.io.write_perm(perm, f_name, o_name, sg, mols)
+      # print("writing out the perm")
+      # wabgen.io.write_perm(perm, f_name, o_name, sg, mols)
       return 0
 
    if arg_dict["return_cell"]:
@@ -562,14 +593,14 @@ def add_template_molecule(temp_fname, Mol):
 
 
 def standardize_Molecule(Mol, temp_fname, st=1e-3):
-    """Standardize the molecules orientation, relative to template molecules, uses as template if
-    template not stored already.
+    """
+    Standardize the molecules orientation, relative to template molecules.
+
+    Uses as template if template not stored already.
 
     test that the ops always come out inidentical order after standardization
     05.07.2018, tested ops of template and mol always identical after alignment, works well
     """
-    PT = placement_table
-
     # 0. if atom return as is
     if Mol.Otype == "Atom":
         return Mol
@@ -577,16 +608,6 @@ def standardize_Molecule(Mol, temp_fname, st=1e-3):
     # 1. check if a template with the same point group exists already
     params = wabgen.io.parse_file(temp_fname, st, template=True)
     mols = params["mols"]
-    V_dist = params["V_dist"]
-    min_seps = params["min_seps"]
-    target_atom_nums = params["target_atom_nums"]
-    cell_abc = params["cell_abc"]
-    merge_groups = params["merge_groups"]
-    pmols = params["p_mols"]
-    pdict = params["p_dict"]
-    gps = params["gulp_potentials"]
-    P = params["pressure"]
-
     tmol = None
     for mol in mols:
         if mol.name == Mol.point_group_sch:

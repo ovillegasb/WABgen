@@ -2,12 +2,41 @@
 """Submodule registering input/output functions in WABgen."""
 
 import os
+import shutil
 import numpy as np
 from wabgen.utils.castep import general_castep_parse
 from wabgen.core import Molecule
 
 # find the directory
 directory = os.path.dirname(__file__)
+
+
+def prepare_output_directory(directory_path):
+    """
+    Verify if the output directory exists, if not, creates it.
+
+    If it exists, removes all the files in it.
+
+    Args:
+    -----
+        directory_path (str): The path to the output directory.
+    """
+    if not os.path.exists(directory_path):
+        # Create the directory if it does not exist
+        os.makedirs(directory_path)
+        print(f"Directory created: {directory_path}")
+    else:
+        # Directory exists, remove all files inside it
+        for filename in os.listdir(directory_path):
+            file_path = os.path.join(directory_path, filename)
+            try:
+                if os.path.isfile(file_path) or os.path.islink(file_path):
+                    os.unlink(file_path)
+                elif os.path.isdir(file_path):
+                    shutil.rmtree(file_path)
+            except Exception as e:
+                print(f'Failed to delete {file_path}. Reason: {e}')
+        print(f"All files deleted in the directory: {directory_path}")
 
 
 def str_to_func(s):
@@ -206,13 +235,6 @@ def parse_file(fname, st, template=False):
             D[el1][el2] = c_rads[el1]+c_rads[el2]
       min_seps = [els,D]
 
-   #parse in the merging groups
-   merge_groups = None
-   if "merge_groups" in out:
-      merge_groups = {}
-      for t in out["merge_groups"]:
-         merge_groups[t[0]] = t[1:]
-
    #pdict is perm_dict if a specific perm is specified
    input_params = {}
    input_params["mols"] = sorted(mols, key=lambda m: m.name)
@@ -230,9 +252,7 @@ def parse_file(fname, st, template=False):
    input_params["min_seps"] = min_seps
    input_params["target_atom_nums"] = target_atom_nums
    input_params["cell_abc"] = cell_abc
-   input_params["merge_groups"] = merge_groups
    input_params["p_mols"] = p_mols
-   input_params["p_dict"] = None
    input_params["gulp_potentials"] = gps
    input_params["pressure"] = P
    input_params["Z_molecules"] = Z_molecules
@@ -259,7 +279,7 @@ def write_perm(perm, cell_name, o_name, sg, Mols):
 
 def write_res(fname,cell, E=None, platon=False, P=0.0):
    #writes a res file from an instance of the UnitCell class
-   f = open(fname+".res",'w')
+   f = open(fname+".res", 'w')
    #title
    vol = abs(np.linalg.det(cell.cartBasis))
    n = len(cell.atoms)

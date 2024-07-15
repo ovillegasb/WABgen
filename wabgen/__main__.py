@@ -8,7 +8,7 @@ import os
 import time
 import random
 import string
-from wabgen.io import parse_file
+from wabgen.io import parse_file, prepare_output_directory
 from wabgen.core import SG, standardize_Molecule, pick_option
 from wabgen.utils import symm
 from wabgen.utils.align import read_rotation_dict
@@ -16,6 +16,13 @@ from wabgen.utils.profile import start_profiling
 from wabgen.utils.allocate import zero_site_allocation, new_site_allocation, convert_new_SA_to_old
 from wabgen.core import placement_table, weight_spacegroups, make_perm, add_hash
 from multiprocessing import Process
+
+
+# find the directory
+directory = os.path.dirname(__file__)
+
+# local directory
+cwd = os.getcwd()
 
 
 TITLE = """\033[1;36m
@@ -81,17 +88,6 @@ ve")
         type=int,
         default=230,
         help="defines the maximum value of spacegroup ending with 230."
-    )
-
-    settings.add_argument(
-        "-fom", "--filter_out_molecules",
-        action="store_true"
-    )
-
-    settings.add_argument(
-        "-ptol", "--filter_ptol",
-        type=float,
-        default=10.0
     )
 
     settings.add_argument(
@@ -183,50 +179,63 @@ def main():
     args = options()
     t_i_total = time.time()
 
-    output_folder = "completed"
-    if not os.path.exists(output_folder):
-        print(f"The {output_folder} folder does not exist, it will be created.")
-        os.mkdir(output_folder)
-
-    cwd = os.getcwd()
-    directory = os.path.dirname(__file__)
-
+    # Getting the variables defined in the options
     seed = args["seed"]
     N = args["number"]
     form = args["form"]
     sgb = [args["spacegroup_lower_bound"], args["spacegroup_upper_bound"]]
-    fom = args["filter_out_molecules"]  # TODO: Que hace?
-    ptol = args["filter_ptol"]          # TODO: Que hace?
     sg_list = args["sg_list"]
     site_mult_restrictions = {}
     site_rank_restrictions = {}
+    output_folder = "completed"
 
     print("\t{:<35}{:>20}".format("Input file: ", seed))
+
+    if args["parallel"]:
+        if args["nc"] is None:
+            Nc = os.cpu_count() - 1
+        else:
+            Nc = args["nc"] - 1
+    else:
+        Nc = 1
+
+    if Nc < 1:
+        Nc = 1
+
+    print("\t{:<35}{:>20}".format("Number of cous: ", Nc))
     print("\t{:<35}{:>20}".format("Number of files to generate: ", N))
     print("\t{:<35}{:>20}".format("Output format: ", form))
-    print("\t{:<35}{:>20}".format("Range of selected spacegroups: ", "-".join([str(i) for i in sgb])))
+    print("\t{:<35}{:>20}".format("Range of selected spacegroups: ", "-".join(
+        [str(i) for i in sgb]
+    )))
+    print("\t{:<35}{:>20}".format("Output folder: ", output_folder))
+    # Prepare output folder
+    prepare_output_directory(output_folder)
 
     # parse in the input file containing the molecules objects
     params = parse_file(seed, args["symmetry_tolerance"], template="True")
-    print(params)
 
     mols = params["mols"]
     V_dist = params["V_dist"]
     min_seps = params["min_seps"]
     target_atom_nums = params["target_atom_nums"]
     cell_abc = params["cell_abc"]
-    merge_groups = params["merge_groups"]
-    pdict = params["p_dict"]
     gps = params["gulp_potentials"]
     pressure = params["pressure"]
-    # premade_mols = params["p_mols"]
+    Z_molecules = params["Z_molecules"]
 
-    for mol in mols:
-        mol.print_symm_info()
+    # for mol in mols:
+    #     mol.print_symm_info()
+
+    # for z in Z_molecules:
+    #     print("Z=", z)
+    #     mols_z = Z_molecules[z]["MOLS"]
+    #     for mol in mols_z:
+    #         mol.print_symm_info()
 
     # generate all instances of the spacegroup class here, should speed things up!
     t_i = time.time()
-    print("reading in spacegroup representation...")
+    print("reading in spacegroup representation")
     SpaceGroups = [[]]
     ConvSpaceGroups = [[]]
     for i in range(1, 231):
@@ -235,7 +244,7 @@ def main():
 
     t_f = time.time()
     execution_time = t_f - t_i
-    print("..done in %.3f s" % execution_time)
+    print("done in %.3f s" % execution_time)
 
     # standardize the molecules
     t_i = time.time()
@@ -249,25 +258,43 @@ def main():
         if mol.Otype == "Mol":
             Rot_dicts[mol.name] = read_rotation_dict(mols[i], SpaceGroups)
 
+    for z in Z_molecules:
+        print("Z=", z)
+        mols_z = Z_molecules[z]["MOLS"]
+        for i, mol in enumerate(mols_z):
+            print(i, mol)
+            mol.print_symm_info()
+            Z_molecules[z]["MOLS"][i] = standardize_Molecule(
+                mol, temp_fname, args["symmetry_tolerance"]
+            )
+
     t_f = time.time()
     execution_time = t_f - t_i
-    print("..done in %.3f s" % execution_time)
+    print("done in %.3f s" % execution_time)
 
     # spacegroup list
     if sg_list is None:
         sg_list = [x for x in range(sgb[0], sgb[1]+1)]
 
+    # TODO
     # p = start_profiling()
 
-    only_atoms = True
-    for mol in mols:
-        if mol.Otype == "Mol":
-            only_atoms = False
+    # TODO
+    # only_atoms = True
+    # for mol in mols:
+    #     if mol.Otype == "Mol":
+    #         only_atoms = False
 
     ####
     # TODO
+    t_i = time.time()
     new_options = {}
-    print("generating options...")
+    # generating ooptions for z
+    for z in Z_molecules:
+        Z_molecules[z]["options"] = {}
+
+    print("Generating options")
+
     for j, sg_ind in enumerate(sg_list):
         print("\r", j+1, "/", len(sg_list), SpaceGroups[sg_ind].name, end="\n")
         zsa = zero_site_allocation(
@@ -288,8 +315,31 @@ def main():
             srr=site_rank_restrictions,
             max_options=args["max_options"]
         )
+
+        # Doing for every Z value
+        for z in Z_molecules:
+            mols_z = Z_molecules[z]["MOLS"]
+            zsa = zero_site_allocation(
+                SpaceGroups[sg_ind],
+                mols_z,
+                placement_table,
+                site_mult_restrictions=site_mult_restrictions,
+                site_rank_restrictions=site_rank_restrictions
+            )
+
+            Z_molecules[z]["options"][sg_ind] = new_site_allocation(
+                SpaceGroups[sg_ind],
+                mols_z,
+                placement_table,
+                zsa,
+                msr=site_mult_restrictions,
+                srr=site_rank_restrictions,
+                max_options=args["max_options"]
+            )
+
     print("\nincluding rotations...")
     full_options = new_options
+    print(full_options)
     zkeys = []
     print("final options are...")
     for sg_ind in full_options:
@@ -299,6 +349,17 @@ def main():
 
     for sg_ind in zkeys:
         del full_options[sg_ind]
+
+    for z in Z_molecules:
+        full_options_Z = Z_molecules[z]["options"]
+        zkeys = []
+
+        for sg_ind in full_options_Z:
+            if len(full_options_Z[sg_ind]) == 0:
+                zkeys.append(sg_ind)
+
+        for sg_ind in zkeys:
+            del Z_molecules[z]["options"][sg_ind]
 
     # create a list of weighted options to use for the random loop
     sg_inds = [key for key in full_options]
@@ -310,20 +371,27 @@ def main():
         filename=args["sg_fs_file"]
     )
 
+    for z in Z_molecules:
+        sg_inds = [key for key in Z_molecules[z]["options"]]
+        Z_molecules[z]["weighted_options"], _ = weight_spacegroups(
+            sg_inds,
+            SpaceGroups,
+            weighting=args["sg_weight"],
+            filename=args["sg_fs_file"]
+        )
+
+    t_f = time.time()
+    execution_time = t_f - t_i
+    print("done in %.3f s" % execution_time)
+
     ####
 
     # set the base file name
     fname = cwd + "/" + seed.replace(".cell", "")
     print(fname)
-    i = 0
+    # i = 0
 
-    # prepare the origins file and add the cell and args and strings
-    o_name = "origins_"+seed
-    print(o_name)
-    o_name = add_hash(o_name, 7) + ".txt"
-    print(o_name)
-
-    # random allocation looop
+    # random allocation loop
     arg_dict = {
         "min_seps": min_seps,
         "V_dist": V_dist,
@@ -340,32 +408,50 @@ def main():
         "pressure": pressure,
         "minsep_noise": args["minsep_noise"],
         "aenet_relax": args["aenet_relax"],
-        "o_name": o_name,
         "Rot_dicts": Rot_dicts}
-
-    if args["parallel"]:
-        if args["nc"] is None:
-            Nc = os.cpu_count()-1
-        else:
-            Nc = args["nc"]-1
-    else:
-        Nc = 1
-
-    if Nc < 1:
-        Nc = 1
-
-    print("\n\n\n Nc=", Nc, "\n\n\n")
 
     ###############
     # BUCLE central
     ###############
     procs = []
+    processes = []
     Nmade = 0
+    for _ in range(N):
+        # Choosing a random Z value for each iteration.
+        z_val = random.choice(list(Z_molecules.keys()))
+        print(f"\tMolecular fomulate taked {z_val}")
+        full_options = Z_molecules[z_val]["options"]
+        z_weighted_options = Z_molecules[z_val]["weighted_options"]
+        lw0 = len(z_weighted_options)
+        if lw0 > 0:
+            r = random.randint(0, len(z_weighted_options)-1)
+        else:
+            r = 0
 
-    print(N-Nmade)
-    print(Nc)
+        sg_ind = z_weighted_options[r]
+        arg_dict["sg_ind"] = sg_ind
+        arg_dict["sg"] = SpaceGroups[sg_ind]
+        arg_dict["Z_val"] = z_val
+        arg_dict["V_dist"] = Z_molecules[z_val]["V_dist"]
+        full_mols = Z_molecules[z_val]["MOLS"]
+        print(f"\tpicking perm for sg={sg_ind} from stratified options...")
+
+        new_perm = pick_option(full_options[sg_ind])
+        perm = convert_new_SA_to_old(new_perm, SpaceGroups[sg_ind], placement_table, full_mols)
+        perm = [-1, perm]  # modification as now expects [dof, perm]
+        arg_dict["mols"] = full_mols
+
+        p = Process(target=make_perm, args=(perm, fname, arg_dict))
+        p.start()
+        processes.append(p)
+
+        Nmade += 1
+        print(f"\tStructures generates: {Nmade:04d}/{N:04d}")
+    """
     while Nmade < N:
-        # 1. Update the number of processes??????
+        # 1. Update the number of processes
+        print(Nmade)
+        time.sleep(5)
         while len(procs) >= Nc or N-Nmade <= len(procs) and N-Nmade > 0:
             time.sleep(0.1)
             for p in procs:
@@ -376,37 +462,47 @@ def main():
 
         # 2. Spawn a new process
         if N-Nmade > len(procs):
-            lw0 = len(weighted_options)
-            print(lw0)
+            # Choosing a random Z value for each iteration
+            z_val = random.choice(list(Z_molecules.keys()))
+
+            full_options = Z_molecules[z_val]["options"]
+            z_weighted_options = Z_molecules[z_val]["weighted_options"]
+            lw0 = len(z_weighted_options)
+
             if lw0 > 0:
-                r = random.randint(0, len(weighted_options)-1)
+                r = random.randint(0, len(z_weighted_options)-1)
             else:
                 r = 0
-            print(r)
-            sg_ind = weighted_options[r]
-            print(sg_ind)
+
+            sg_ind = z_weighted_options[r]
             arg_dict["sg_ind"] = sg_ind
             arg_dict["sg"] = SpaceGroups[sg_ind]
+            arg_dict["Z_val"] = z_val
+            arg_dict["V_dist"] = Z_molecules[z_val]["V_dist"]
+            full_mols = Z_molecules[z_val]["MOLS"]
 
-            full_mols = mols
             print(f"picking perm for sg={sg_ind} from stratified options...")
             new_perm = pick_option(full_options[sg_ind])
-            print(new_perm)
             perm = convert_new_SA_to_old(new_perm, SpaceGroups[sg_ind], placement_table, full_mols)
             perm = [-1, perm]  # modification as now expects [dof, perm]
-
             arg_dict["mols"] = full_mols
+
             p = Process(target=make_perm, args=(perm, fname, arg_dict))
             p.start()
             procs.append(p)
-
-            # exit()
+            processes.append(p)
+    """
 
     ###############
+
+    for process in processes:
+        process.join()
+
+    print('\nAll computations are done')
+
     t_f_total = time.time()
     execution_time = t_f_total - t_i_total
     print("\tElapsed time done in %.3f s" % execution_time)
-
 
 
 if __name__ == '__main__':
