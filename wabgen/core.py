@@ -263,7 +263,11 @@ def make_structures(dof_perm, fname, arg_dict, unique_structures: dict[str, list
             else:
                 sg = SpaceGroups[sg_ind]
 
-            accept, cell = flex_push_apart(cell, sg, min_seps, P=pressure, target_atom_nums=target_atom_nums)
+            try:
+                accept, cell = flex_push_apart(cell, sg, min_seps, P=pressure, target_atom_nums=target_atom_nums)
+            except ZeroDivisionError:
+                accept = False
+
             # print("accept and cell are", accept, cell)
             if not accept:
                 continue

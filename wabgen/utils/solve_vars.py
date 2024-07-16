@@ -510,6 +510,7 @@ def init_atom_vars(cell, sg):
       if not matched:
          #error message written out to local log file
          print("solve pos error!!!")
+         """TODO
          fname = "solve_pos_errors.txt"
          with open(fname, "a") as f:
             f.write("\n\n\n\n" + "coulnd't match up atoms to wyckoff sites\n")
@@ -534,7 +535,8 @@ def init_atom_vars(cell, sg):
                f.write(str(site.frac_pos) + str(site.other_frac_pos))
             from wairss import write_res
             #write_res("solve_pos", cell) 
-            return False, None, None, None, None, None
+         """
+         return False, None, None, None, None, None
   
       #4. if here then have solved for the atoms positions    
       #generate Bi, wi and var_inds for the atom, add to lists
