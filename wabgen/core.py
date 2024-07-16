@@ -112,6 +112,26 @@ def update_structure_list(old_dict, new_dict):
     return old_dict
 
 
+def log_memory_usage(prefix):
+    """Log memory used."""
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+
+    def bytes_to_mb(size_bytes):
+        """Convert bytes to megabytes."""
+        return round(size_bytes / (1024 * 1024), 2)
+
+    rss = bytes_to_mb(mem_info.rss)
+    vms = bytes_to_mb(mem_info.vms)
+    sys_mem = psutil.virtual_memory()
+    total_mem = bytes_to_mb(sys_mem.total)
+    used_mem = bytes_to_mb(sys_mem.used)
+    available_mem = bytes_to_mb(sys_mem.available)
+
+    print(f"{prefix} - Memory usage: RSS={rss} MB, VMS={vms} MB")
+    print(f"{prefix} - System Memory: Total={total_mem} MB, Used={used_mem} MB, Available={available_mem} MB")
+
+
 def print_blue(text):
     """Print message in blue."""
     print(f"\033[1;33m{text}\033[0m")
@@ -193,6 +213,7 @@ def make_structures(dof_perm, fname, arg_dict, unique_structures: dict[str, list
     # Where is the process
     cpu = get_cpu_num()
     print_blue(f"Process is running on CPU {cpu}")
+    log_memory_usage(f"{cpu} start")
     time.sleep(5)
 
     sg = arg_dict["sg"]
@@ -319,8 +340,8 @@ def make_structures(dof_perm, fname, arg_dict, unique_structures: dict[str, list
             rejected = True
 
         if rejected:
-            # cmd = "rm -v " + f_name + ".res"
-            cmd = "mv -v " + f_name + ".res rejected/"
+            cmd = "rm -v " + f_name + ".res"
+            # cmd = "mv -v " + f_name + ".res rejected/"
             os.system(cmd)
             n_try -= 1
             accept = False
@@ -332,8 +353,8 @@ def make_structures(dof_perm, fname, arg_dict, unique_structures: dict[str, list
         if not duplicate_filter.test(pymatgen_struct):
             # unique_structures[f_name] = pymatgen_struct
             print("Duplicated structure will be removed and another structure will be created")
-            # cmd = "rm -v " + f_name + ".res"
-            cmd = "mv -v " + f_name + ".res duplicates/"
+            cmd = "rm -v " + f_name + ".res"
+            # cmd = "mv -v " + f_name + ".res duplicates/"
             os.system(cmd)
             n_try -= 1
             accept = False
@@ -365,7 +386,8 @@ def make_structures(dof_perm, fname, arg_dict, unique_structures: dict[str, list
 
         print(60 * "#")
         print("Finished, next structure ...")
-        time.sleep(2)
+        log_memory_usage(f"{cpu} end")
+        time.sleep(5)
 
         return 0
 

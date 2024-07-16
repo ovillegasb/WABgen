@@ -7,17 +7,14 @@ import argparse
 import os
 import time
 import random
-import string
 from wabgen.io import parse_file, prepare_output_directory
 from wabgen.core import SG, standardize_Molecule, pick_option
 from wabgen.utils import symm
 from wabgen.utils.align import read_rotation_dict
 from wabgen.utils.profile import start_profiling
 from wabgen.utils.allocate import zero_site_allocation, new_site_allocation, convert_new_SA_to_old
-from wabgen.core import placement_table, weight_spacegroups, make_structures, add_hash
+from wabgen.core import placement_table, weight_spacegroups, make_structures, log_memory_usage
 from multiprocessing import Process, Manager, Lock
-from collections import defaultdict
-from pymatgen.core import Structure
 
 
 # find the directory
@@ -56,6 +53,11 @@ This project was inspired and initiated by the WAM code.
 Author: Orlando Villegas
 Date: 2024-07-08
 ----------------
+
+Example:
+
+python -m wabgen system.cell -n 100 --push_apart flexible --parallel
+
 """
 
 
@@ -216,7 +218,7 @@ def main():
     if Nc < 1:
         Nc = 1
 
-    print("\t{:<35}{:>20}".format("Number of cous: ", Nc))
+    print("\t{:<35}{:>20}".format("Number of cpus: ", Nc + 1))
     print("\t{:<35}{:>20}".format("Number of files to generate: ", N))
     print("\t{:<35}{:>20}".format("Output format: ", form))
     print("\t{:<35}{:>20}".format("Range of selected spacegroups: ", "-".join(
@@ -226,9 +228,8 @@ def main():
     print("")
     # Prepare output folder
     prepare_output_directory(output_folder)
-    # Folder for duplicate
-    prepare_output_directory("duplicates")
-    prepare_output_directory("rejected")
+    # prepare_output_directory("duplicates")
+    # prepare_output_directory("rejected")
 
     # parse in the input file containing the molecules objects
     params = parse_file(seed, args["symmetry_tolerance"], template="True")
@@ -435,6 +436,8 @@ def main():
     lock = Lock()
     processes = []
     Nmade = 0
+    log_memory_usage("Main process start")
+    time.sleep(5)
     for _ in range(N):
         # Choosing a random Z value for each iteration.
         z_val = random.choice(list(Z_molecules.keys()))
@@ -519,6 +522,9 @@ def main():
 
     for process in processes:
         process.join()
+
+    log_memory_usage("Main process end")
+    time.sleep(5)
 
     final_structures = 0
     for hash_comp in shared_dict_structure:

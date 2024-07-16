@@ -91,7 +91,7 @@ def get_R_matrix(sg, mol, site, rot_ind, mol_rot_dict, theta =None):
    and subs in for random degrees of freedom"""
    Mopt = n2R(sg, mol, site, rot_ind, mol_rot_dict)
 
-   print("Mopt is", Mopt)
+   # print("Mopt is", Mopt)
 
    if Mopt is None:
       M = random_rotation()

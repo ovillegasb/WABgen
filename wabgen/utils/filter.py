@@ -8,7 +8,7 @@ import networkx as nx
 import ase.io
 from ase.data import covalent_radii
 from ase.neighborlist import NeighborList
-from func_timeout import func_set_timeout, FunctionTimedOut
+from func_timeout import func_set_timeout
 
 
 # Maximum execution time of the function (s).
