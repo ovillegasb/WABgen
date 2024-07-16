@@ -14,8 +14,10 @@ from wabgen.utils import symm
 from wabgen.utils.align import read_rotation_dict
 from wabgen.utils.profile import start_profiling
 from wabgen.utils.allocate import zero_site_allocation, new_site_allocation, convert_new_SA_to_old
-from wabgen.core import placement_table, weight_spacegroups, make_perm, add_hash
-from multiprocessing import Process
+from wabgen.core import placement_table, weight_spacegroups, make_structures, add_hash
+from multiprocessing import Process, Manager, Lock
+from collections import defaultdict
+from pymatgen.core import Structure
 
 
 # find the directory
@@ -23,6 +25,18 @@ directory = os.path.dirname(__file__)
 
 # local directory
 cwd = os.getcwd()
+
+
+class bcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[91m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
 
 
 TITLE = """\033[1;36m
@@ -117,7 +131,7 @@ ve")
     settings.add_argument(
         "-n_tries",
         type=int,
-        default=50
+        default=100
     )
 
     settings.add_argument(
@@ -209,8 +223,12 @@ def main():
         [str(i) for i in sgb]
     )))
     print("\t{:<35}{:>20}".format("Output folder: ", output_folder))
+    print("")
     # Prepare output folder
     prepare_output_directory(output_folder)
+    # Folder for duplicate
+    prepare_output_directory("duplicates")
+    prepare_output_directory("rejected")
 
     # parse in the input file containing the molecules objects
     params = parse_file(seed, args["symmetry_tolerance"], template="True")
@@ -339,7 +357,7 @@ def main():
 
     print("\nincluding rotations...")
     full_options = new_options
-    print(full_options)
+    # print(full_options)
     zkeys = []
     print("final options are...")
     for sg_ind in full_options:
@@ -388,8 +406,6 @@ def main():
 
     # set the base file name
     fname = cwd + "/" + seed.replace(".cell", "")
-    print(fname)
-    # i = 0
 
     # random allocation loop
     arg_dict = {
@@ -413,7 +429,10 @@ def main():
     ###############
     # BUCLE central
     ###############
-    procs = []
+    manager = Manager()
+    shared_dict_structure = manager.dict()
+    counter = manager.Value('i', 0)
+    lock = Lock()
     processes = []
     Nmade = 0
     for _ in range(N):
@@ -441,12 +460,15 @@ def main():
         perm = [-1, perm]  # modification as now expects [dof, perm]
         arg_dict["mols"] = full_mols
 
-        p = Process(target=make_perm, args=(perm, fname, arg_dict))
+        p = Process(
+            target=make_structures,
+            args=(perm, fname, arg_dict, shared_dict_structure, lock, counter)
+        )
         p.start()
         processes.append(p)
 
         Nmade += 1
-        print(f"\tStructures generates: {Nmade:04d}/{N:04d}")
+        print(f"\033[1;34mStructures submitted: {Nmade:04d}/{N:04d}\033[0m")
     """
     while Nmade < N:
         # 1. Update the number of processes
@@ -487,7 +509,7 @@ def main():
             perm = [-1, perm]  # modification as now expects [dof, perm]
             arg_dict["mols"] = full_mols
 
-            p = Process(target=make_perm, args=(perm, fname, arg_dict))
+            p = Process(target=make_structures, args=(perm, fname, arg_dict))
             p.start()
             procs.append(p)
             processes.append(p)
@@ -498,7 +520,19 @@ def main():
     for process in processes:
         process.join()
 
+    final_structures = 0
+    for hash_comp in shared_dict_structure:
+        final_structures += len(shared_dict_structure[hash_comp])
+
+    print('Final shared structures generates:', final_structures)
+    print('Final counter value:', counter.value)
+
+    if final_structures != counter.value:
+        print(bcolors.WARNING + "WARNING!" + bcolors.ENDC, end=" - ")
+        print("The generated structures do not match the counted structures")
+
     print('\nAll computations are done')
+    print(f"\t\033[1;32mStructures finished: {counter.value:04d}/{N:04d}\033[0m")
 
     t_f_total = time.time()
     execution_time = t_f_total - t_i_total

@@ -63,7 +63,7 @@ def convert_new_SA_to_old(new_SA, sg, PT, mols):
     #differnt perm for each molecule ind as independently sym reduced.
     for mol_ind, site_inds in dic.items():
         mol = mols[mol_ind]
-        print("mol is", mol)
+        # print("mol is", mol)
         perm = random.choice(norm_perms)
         for site_ind in site_inds:
             si = perm[site_ind]

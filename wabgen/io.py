@@ -71,28 +71,28 @@ def parse_file(fname, st, template=False):
 
    out = general_castep_parse(fname, ignoreComments=False)
 
-   print(out)
+   # print(out)
 
    # setup the groups/ligands
    groups = set()
    for line in out["positions_abs"]:
       groups.add(line[6])
 
-   print("Ligands:", groups)
+   # print("Ligands:", groups)
 
    # parse in the pressure, use 0.5 GPa if not present to aid convergence
    P = 0.5
    if "pressure" in out:
       for line in out["pressure"]:
          P = float(line[0])
-   print("Pressure:", P, "GPa")
+   # print("Pressure:", P, "GPa")
 
    # parse in the gulp potentials
    gps = []
    if "gulp_potentials" in out:
       for line in out["gulp_potentials"]:
          gps.append(line)
-   print("GULP potentials:\n", gps)
+   # print("GULP potentials:\n", gps)
 
    unit_formular = []
    if "unit_formular" in out:
@@ -100,9 +100,9 @@ def parse_file(fname, st, template=False):
         if len(line) == 2:
            unit_formular = list(range(line[0], line[-1] + 1))
 
-   print("Z value:\n", unit_formular)
+   # print("Z value:\n", unit_formular)
    Z_molecules = {z: {"MOLS": [], "V_dist": None} for z in unit_formular}
-   print("Nueva estructura:", Z_molecules)
+   # print("Nueva estructura:", Z_molecules)
 
    # parse in the cell
    cell_abc = []
@@ -110,12 +110,12 @@ def parse_file(fname, st, template=False):
       for line in out["lattice_abc"]:
          for x in line:
             cell_abc.append(float(x))
-   print("cell_abc:\n", cell_abc)
+   # print("cell_abc:\n", cell_abc)
 
    # append the molecules to the mols object
    mols = []
    for group in groups:
-      print(group)
+      # print(group)
       coords = []
       species = []
       for line in out["positions_abs"]:
@@ -129,12 +129,12 @@ def parse_file(fname, st, template=False):
       if dsites is not None:
          if group in dsites:
             print(dsites[group])
-      print("number:", number)
-      print("species:", species)
+      # print("number:", number)
+      # print("species:", species)
       mols.append(Molecule(species, coords, number=number, name=group, st=st))
       # Probando la nueva estructura
       for z in Z_molecules:
-        print(number, z, number*z)
+        # print(number, z, number*z)
         Z_molecules[z]["MOLS"].append(Molecule(species, coords, number=z*number, name=group, st=st))
 
    p_mols = []
@@ -144,17 +144,17 @@ def parse_file(fname, st, template=False):
       if "pre_made" in line[1]:
          p_mols.append(line)
       elif not line[1] in groups:
-         print(line)
+         # print(line)
          number = line[0]
          atom_sym = line[1]
-         print(number)
+         # print(number)
          mols.append(Molecule([atom_sym], [0, 0, 0], number=number, Otype="Atom"))
          # Probando la nueva estructura
          for z in Z_molecules:
-           print(number, z, number*z)
+           # print(number, z, number*z)
            Z_molecules[z]["MOLS"].append(Molecule([atom_sym], [0, 0, 0], number=z*number, Otype="Atom"))
 
-   print("Molecules:\n", mols)
+   # print("Molecules:\n", mols)
 
    # remove 0 species
    if not template:
@@ -167,24 +167,24 @@ def parse_file(fname, st, template=False):
       for x in split:
          V_dist += str(x) + " "
 
-   print(V_dist)
+   # print(V_dist)
 
    # parse in the target volume as a normal distribution
    if "density" in out:
       vol_atom = out["density"][0][0]
-      print("Density per atom [ang]^3 / N atom:", vol_atom)
+      # print("Density per atom [ang]^3 / N atom:", vol_atom)
       for z in Z_molecules:
-         print("Z:", z)
+         # print("Z:", z)
          natoms = 0
          for m in Z_molecules[z]["MOLS"]:
             natoms += m.number * len(m.species)
 
-         print("Total numer of atoms:", natoms)
+         # print("Total numer of atoms:", natoms)
          v_centre = vol_atom * natoms
-         print("Volume center:", v_centre)
+         # print("Volume center:", v_centre)
          v_min = v_centre - 100
          v_max = v_centre + 100
-         print("Volume range:", v_min, v_max)
+         # print("Volume range:", v_min, v_max)
          Z_molecules[z]["V_dist"] = f"numpy.random.uniform low={v_min} high={v_max}"
    
    #read in the target_atom_numbers from a block
@@ -239,14 +239,14 @@ def parse_file(fname, st, template=False):
    input_params = {}
    input_params["mols"] = sorted(mols, key=lambda m: m.name)
 
-   #print molecules to check they are read correctly
-   if True and not template:
-      print("type of mols is", type(mols))
-      print("mols are")
-      for mol in mols:
-         print(mol.name, mol.number, mol.Otype)
-         if mol.Otype == "Mol":
-            print(mol.symbol.HM)
+   # print molecules to check they are read correctly
+   # if True and not template:
+   #    print("type of mols is", type(mols))
+   #    print("mols are")
+   #    for mol in mols:
+   #       print(mol.name, mol.number, mol.Otype)
+   #       if mol.Otype == "Mol":
+   #          print(mol.symbol.HM)
 
    input_params["V_dist"] = V_dist
    input_params["min_seps"] = min_seps

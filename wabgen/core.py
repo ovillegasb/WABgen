@@ -7,7 +7,10 @@ import string
 import copy
 import math
 import random
+import psutil
+import time
 import numpy as np
+from collections import defaultdict
 from func_timeout import FunctionTimedOut
 from pymatgen.symmetry.analyzer import PointGroupAnalyzer as PGA
 from pymatgen.symmetry.groups import PointGroup as PymatPointGroup
@@ -15,6 +18,7 @@ from pymatgen.core.structure import IMolecule
 from pymatgen.analysis.structure_matcher import StructureMatcher
 from pymatgen.alchemy.filters import RemoveDuplicatesFilter
 from pymatgen.io.ase import AseAtomsAdaptor
+from pymatgen.core import Structure
 from wabgen.utils.data import get_atomic_data
 from wabgen.utils.align import parallel, calc_R1, mol2site2
 from wabgen.utils.cell import UnitCell
@@ -25,6 +29,7 @@ from wabgen.utils.makecell import make_cell
 from wabgen.utils.radialpp_bfgs2 import push_apart as flex_push_apart
 from wabgen.utils.filter import test_mof_structure
 import wabgen.io
+import ase.io
 
 
 # find the directory
@@ -80,15 +85,36 @@ metals = [
 
 # Initializing the StructureMatcher
 matcher = StructureMatcher(
+    ltol=0.2,
+    stol=0.3,
+    angle_tol=5.0,
     primitive_cell=True,
-    scale=True
+    scale=True,
+    attempt_supercell=True
 )
 
-# Create the RemoveDuplicatesFilter filter
-duplicate_filter = RemoveDuplicatesFilter(
-    structure_matcher=matcher,
-    symprec=1e-3
-)
+
+def get_cpu_num():
+    """Return cpu number."""
+    pid = os.getpid()
+    p = psutil.Process(pid)
+    return p.cpu_num()
+
+
+def update_structure_list(old_dict, new_dict):
+    """Return structure listm useful when the code is running in parallel."""
+    for hash_comp in new_dict:
+        if hash_comp not in old_dict:
+            old_dict[hash_comp] = list()
+
+        old_dict[hash_comp] += new_dict[hash_comp]
+
+    return old_dict
+
+
+def print_blue(text):
+    """Print message in blue."""
+    print(f"\033[1;33m{text}\033[0m")
 
 
 def read_placement_table(fname):
@@ -132,39 +158,237 @@ def add_hash(fname, N):
     return fname
 
 
-def make_perm(dof_perm, fname, arg_dict):
-   """pass a perm and and a dictionary of args and cnstruct the perm"""
-   #0. conver the arguments to a useable form
-   dof = dof_perm[0]
-   perm = dof_perm[1]
+def make_structures(dof_perm, fname, arg_dict, unique_structures: dict[str, list[Structure]] = defaultdict(list), lock=None, counter=0):
+    """Build structures."""
+    print(60 * "#")
+    print_blue("Running main function from WAMgen - building structure ...")
+    # 0. conver the arguments to a useable form
+    dof = dof_perm[0]
+    perm = dof_perm[1]
 
-   n_tries = arg_dict["n_tries"]
-   sg_ind = arg_dict["sg_ind"]
-   target_atom_nums = arg_dict["target_atom_nums"]
-   form = arg_dict["form"]
-   V_dist = arg_dict["V_dist"]
-   cell_abc = arg_dict["cell_abc"]
-   mols = arg_dict["mols"]
-   min_seps = arg_dict["min_seps"]
-   gulp_ps = arg_dict["gps"]
-   pressure = arg_dict["pressure"]
-   noise = arg_dict["minsep_noise"]
-   aenet_relax = arg_dict["aenet_relax"]
-   Rot_dicts = arg_dict["Rot_dicts"]
-   Z_val = arg_dict["Z_val"]
+    n_tries = arg_dict["n_tries"]
+    sg_ind = arg_dict["sg_ind"]
+    target_atom_nums = arg_dict["target_atom_nums"]
+    form = arg_dict["form"]
+    V_dist = arg_dict["V_dist"]
+    cell_abc = arg_dict["cell_abc"]
+    mols = arg_dict["mols"]
+    min_seps = arg_dict["min_seps"]
+    gulp_ps = arg_dict["gps"]
+    pressure = arg_dict["pressure"]
+    noise = arg_dict["minsep_noise"]
+    aenet_relax = arg_dict["aenet_relax"]
+    Rot_dicts = arg_dict["Rot_dicts"]
+    Z_val = arg_dict["Z_val"]
+    push_apart = arg_dict["push_apart"]
 
-   np.random.seed(None)
+    np.random.seed(None)
 
-   if "sg" in arg_dict:
-      sg = arg_dict["sg"]
-   else:
-      sg = SpaceGroups[sg_ind]
-   #print("TEMP: sg is", sg)
+    # Create the RemoveDuplicatesFilter filter
+    duplicate_filter = RemoveDuplicatesFilter(
+       structure_matcher=matcher,
+       symprec=1e-3
+    )
 
+    # Where is the process
+    cpu = get_cpu_num()
+    print_blue(f"Process is running on CPU {cpu}")
+    time.sleep(5)
+
+    sg = arg_dict["sg"]
+    print_blue(f"Spacegroup: {sg.name}")
+    # print("sg_ind=", sg_ind, "perm=", perm)
+
+    # 0. add some random noise to the minseps
+    dic = min_seps[1]
+    for el1, d in dic.items():
+        for el2, d2 in d.items():
+            dic[el1][el2] += random.uniform(-noise, noise)
+            dic[el2][el1] = dic[el1][el2]
+    min_seps[1] = dic
+
+    # 1. make n_tries attempt to make the permutation
+    n_SG = 2    # fail count for making a supergroup
+    n_SC = 2    # fail count for making a supercell
+    n_vol = 15  # total times to fail because volume is too large
+    n_tries = arg_dict["n_tries"]
+    accept = False
+    N_supercells = 0
+    N_supergroup = 0
+    vols = []
+    n_try = 0
+    P = 0.0
+    print_blue(f"N tries: {n_tries}")
+    print_blue(f"Push apart: {push_apart}")
+    print_blue(f"Z value: {Z_val}")
+    add_centre = False
+
+    while not accept and n_try < n_tries and len(vols) < n_vol:
+        n_try += 1
+
+        if push_apart == "flexible":
+            overlap_accept = False
+            noverlap = 0
+            overlap_max = 30
+
+            # hack for volume distribution
+            # pick a volume then increase it by 1% each failed overlap attemp
+            # use uniform distribution to specify volume exactly
+            func, args, kwargs = wabgen.io.line_to_func(V_dist)
+            args = [float(x) for x in args]
+            for key, item in kwargs.items():
+                kwargs[key] = float(item)
+
+            Vtarg = func(*args, **kwargs)
+            while not overlap_accept:
+                # gradually increase the volume estimate while struggling to make a non-overlapping
+                # guess cell. useful for bad volume estimate and saving time!
+                Vtarg *= 1.01
+                vd = "numpy.random.uniform " + str(Vtarg) + " " + str(Vtarg*1.001)
+                all_details, cell = make_cell(mols, sg_ind, perm, vd, cell_abc, Rot_dicts, add_centre)
+                ls = set([at.label for at in cell.atoms])
+                if "U" in ls:
+                    print("U in cell")
+                    exit()
+                if cell_abc is None:
+                    overlap_accept = overlap_check(cell, all_details)
+                else:
+                    overlap_accept = True
+                noverlap += 1
+                if noverlap >= overlap_max:
+                    print("noverlap is", noverlap)
+                    continue
+            if "sg" in arg_dict:
+                sg = arg_dict["sg"]
+            else:
+                sg = SpaceGroups[sg_ind]
+
+            accept, cell = flex_push_apart(cell, sg, min_seps, P=pressure, target_atom_nums=target_atom_nums)
+            # print("accept and cell are", accept, cell)
+            if not accept:
+                continue
+            cell.sg_num = sg.number
+            H = cell.vol/len(cell.atoms)
+
+        # check to see if made a supercell
+        n_orig = len(cell.atoms)
+        cell = symm.niggli_reduce(cell, to_prim=True)
+        cell.sg_num = sg_ind
+        n_final = len(cell.atoms)
+        H *= n_final/n_orig
+        if arg_dict["no_supercells"] and n_final < n_orig:
+            N_supercells += 1
+            accept = False
+            continue
+
+        # if here then have a good cell and write it out to file
+        # create a file name
+        f_name = fname + "_" + str(cell.sg_num)
+        sg_name = str(sg.name)
+        sg_name = re.sub(r"/", "_", sg_name)
+        f_name += "_"+sg_name
+        f_name += f"_Z_{Z_val}"
+        f_name = add_hash(f_name, 8)
+        print_blue("system name: {}".format(f_name.split("/")[-1]))
+
+        # H should always be define, often 0
+        print_blue(f"writing res with P={P} and E={H}")
+        wabgen.io.write_res(f_name, cell, E=H, P=P)
+
+        # Testing filter distances
+        metal_center = set()
+        for at in cell.atoms:
+            if at.label in metals:
+                metal_center.add(at.label)
+
+        metal_center = "".join(list(metal_center))
+        try:
+            rejected = test_mof_structure(
+               f_name + ".res",
+               metal_center,
+               radius=5.00,
+               cutoff=3.28,
+               dist_min=1.90,
+            )
+        except FunctionTimedOut:
+            print("Function Timed Out. The file will be rejected")
+            rejected = True
+
+        if rejected:
+            # cmd = "rm -v " + f_name + ".res"
+            cmd = "mv -v " + f_name + ".res rejected/"
+            os.system(cmd)
+            n_try -= 1
+            accept = False
+            continue
+
+        # Testing duplicates
+        ase_struct = ase.io.read(f_name + ".res")
+        pymatgen_struct = AseAtomsAdaptor.get_structure(ase_struct)
+        if not duplicate_filter.test(pymatgen_struct):
+            # unique_structures[f_name] = pymatgen_struct
+            print("Duplicated structure will be removed and another structure will be created")
+            # cmd = "rm -v " + f_name + ".res"
+            cmd = "mv -v " + f_name + ".res duplicates/"
+            os.system(cmd)
+            n_try -= 1
+            accept = False
+            continue
+
+        if lock is not None:
+            with lock:
+                # unique_structures.update(duplicate_filter.structure_list)
+                unique_structures = update_structure_list(
+                   unique_structures,
+                   duplicate_filter.structure_list
+                )
+                duplicate_filter.structure_list = defaultdict(list, unique_structures)
+        else:
+            unique_structures = update_structure_list(
+                   unique_structures,
+                   duplicate_filter.structure_list
+                )
+            duplicate_filter.structure_list = defaultdict(list, unique_structures)
+
+        # move completed file to completed
+        cmd = "mv " + f_name + "* ./completed/"
+        print("cmd is", cmd)
+        os.system(cmd)
+
+        if lock is not None:
+            with lock:
+                counter.value += 1
+
+        print(60 * "#")
+        print("Finished, next structure ...")
+        time.sleep(2)
+
+        return 0
+
+    # if here then failed to make the allocation
+    print(f"failed to make the allocation tried {n_try} times from max allowed of {n_tries}" )       #TODO look at this bit!
+    print("perm is", perm)
+    if N_supercells >= n_SC and arg_dict["no_supercells"]:
+        f_name = "rejected because supercell " + str(sg_ind)
+
+    elif N_supergroup >= n_SG and arg_dict["exact_sg"]:
+        f_name = "rejected because supergroup " + str(sg_ind)
+
+    elif len(vols) >= n_vol:
+        f_name = "rejected because of volume:"
+        # vav = sum(vols)/len(vols)
+        v_best = sorted(vols, key=lambda x: x)[0]
+        f_name += " V_best = " + str(v_best)
+        f_name += " distribution = " + str(V_dist[0]) + " " + str(V_dist[1])
+    else:
+        f_name = "couldn't make with " + str(n_tries) + " attempts " + str(sg_ind)
+
+    exit(1)
+
+
+"""
    if "return_cell" not in arg_dict:
       arg_dict["return_cell"] = False
-
-   print("\n\nsg_ind=", sg_ind, "perm=", perm)
 
    #check if only have atoms
    only_atoms = True
@@ -172,34 +396,13 @@ def make_perm(dof_perm, fname, arg_dict):
       if mol.Otype == "Mol":
          only_atoms = False
 
-   """
+   '''
    if target_atom_nums is not None:
       add_centre = True
    else:
       add_centre = False
-   """
+   '''
    add_centre = False
-
-   #0. add some random noise to the minseps
-   dic = min_seps[1]
-   for el1, d in dic.items():
-      for el2, d2 in d.items():
-         dic[el1][el2] += random.uniform(-noise, noise)
-         dic[el2][el1] = dic[el1][el2]
-   min_seps[1] = dic
-
-   #1. make n_tries attempt to make the permutation
-   n_SG = 2    #fail count for making a supergroup
-   n_SC = 2    #fail count for making a supercell
-   n_vol = 15  #total times to fail because volume is too large
-   n_tries = arg_dict["n_tries"]
-   accept = False
-   N_supercells = 0
-   N_supergroup = 0
-   vols = []
-   n_try = 0
-   P = 0.0
-
    #print("push_apart is", arg_dict["push_apart"])
 
    while not accept and n_try < n_tries and N_supercells < n_SC and N_supergroup < n_SG and len(vols) < n_vol:
@@ -226,7 +429,7 @@ def make_perm(dof_perm, fname, arg_dict):
 
 
       #######################################################################################
-      elif arg_dict["push_apart"] in  ["flexible"]:
+      elif arg_dict["push_apart"] in ["flexible"]:
          #pa_profile = start_profiling()
 
          overlap_accept = False
@@ -303,7 +506,7 @@ def make_perm(dof_perm, fname, arg_dict):
             if accept == "super_cell":
                N_supercells += 1
             continue
-      """
+      '''
       #######################################################################################
       elif arg_dict["push_apart"] == "rigid":
          #use python rigid molecule implementation
@@ -328,8 +531,8 @@ def make_perm(dof_perm, fname, arg_dict):
             if not sucess or not check_min_seps(cell, min_seps):
                accept=False
                continue
-      """
-      """
+      '''
+      '''
       #######################################################################################
       #print("WARNING: FINAL VOLUME CHECK SKIPPED")
       p = check_volume(cell.vol, V_dist, Ntest=1000)
@@ -344,7 +547,7 @@ def make_perm(dof_perm, fname, arg_dict):
             continue
          else:
             pass
-      """
+      '''
 
       #check to see if made a supercell
       n_orig = len(cell.atoms)
@@ -364,14 +567,7 @@ def make_perm(dof_perm, fname, arg_dict):
          continue
 
 
-      #if here then have a good cell and write it out to file
-      #create a file name
-      f_name = fname + "_" + str(cell.sg_num)
-      sg_name = str(sg.name)
-      sg_name = re.sub(r"/", "_", sg_name)
-      f_name += "_"+sg_name
-      f_name += f"_Z_{Z_val}"
-      f_name = add_hash(f_name, 8)
+      
 
 
       try:
@@ -401,72 +597,21 @@ def make_perm(dof_perm, fname, arg_dict):
       if arg_dict["return_cell"]:
          return True, cell
 
-      # H should always be define, often 0
-      print(f"writing res with P={P} and E={H}")
-      wabgen.io.write_res(f_name, cell, E=H, P=P)
-
-      # Testing filter distances
-      metal_center = set()
-      for at in cell.atoms:
-         if at.label in metals:
-            metal_center.add(at.label)
-
-      metal_center = "".join(list(metal_center))
-      try:
-         rejected = test_mof_structure(
-            f_name + ".res",
-            metal_center,
-            radius=5.00,
-            cutoff=3.28,
-            dist_min=1.90,
-         )
-      except FunctionTimedOut:
-         print("Function Timed Out. The file will be rejected")
-         rejected = True
       
-      if rejected:
-         cmd = "rm -v " + f_name + ".res"
-         os.system(cmd)
-         continue
 
-      # Testing duplicates
-      # TODO
+      
 
 
-      #now write to file origin.txt the f_name and its perm
-      #move completed file to completed
-      cmd = "mv " + f_name + "* ./completed/"
-      print("cmd is", cmd)
-      os.system(cmd)
-      # print("writing out the perm")
-      # wabgen.io.write_perm(perm, f_name, o_name, sg, mols)
-      return 0
+
+
 
    if arg_dict["return_cell"]:
       return False, None
 
-   #if here then failed to make the allocation
-   print(f"failed to make the allocation tried {n_try} times from max allowed of {n_tries}" )       #TODO look at this bit!
-   print("perm is", perm)
-   if N_supercells >= n_SC and arg_dict["no_supercells"]:
-      f_name = "rejected because supercell " + str(sg_ind)
-
-   elif N_supergroup >= n_SG and arg_dict["exact_sg"]:
-      f_name = "rejected because supergroup " + str(sg_ind)
-
-   elif len(vols) >= n_vol:
-      f_name = "rejected because of volume:"
-      vav = sum(vols)/len(vols)
-      v_best = sorted(vols, key = lambda x: x)[0]
-      f_name += " V_best = " + str(v_best)
-      f_name  += " distribution = " + str(V_dist[0]) + " " + str(V_dist[1])
-   else:
-      f_name = "couldn't make with " + str(n_tries) + " attempts " + str(sg_ind)
-   #write_perm(perm, f_name, o_name, sg, mols)
-
-   #print("exiting make_perm")
-   exit(1)
+   
    return 1
+
+"""
 
 
 def pick_option(sg_opts):
@@ -566,7 +711,7 @@ def add_template_molecule(temp_fname, Mol):
     """Add this molcule to the template_molcules_file."""
     # 1. read in the template file
     out = general_castep_parse(temp_fname, ignoreComments=False)
-    print("out is", out)
+    # print("out is", out)
 
     # 2. add the molecule to the positions_abs block
     name = Mol.point_group_sch
