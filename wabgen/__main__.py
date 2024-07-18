@@ -7,6 +7,7 @@ import argparse
 import os
 import time
 import random
+import psutil
 from wabgen.io import parse_file, prepare_output_directory
 from wabgen.core import SG, standardize_Molecule, pick_option
 from wabgen.utils import symm
@@ -14,7 +15,7 @@ from wabgen.utils.align import read_rotation_dict
 from wabgen.utils.profile import start_profiling
 from wabgen.utils.allocate import zero_site_allocation, new_site_allocation, convert_new_SA_to_old
 from wabgen.core import placement_table, weight_spacegroups, make_structures, log_memory_usage
-from multiprocessing import Process, Manager, Lock
+from multiprocessing import Process, Manager, Lock, Queue
 
 
 # find the directory
@@ -438,40 +439,49 @@ def main():
     Nmade = 0
     log_memory_usage("Main process start")
     time.sleep(5)
-    for _ in range(N):
-        # Choosing a random Z value for each iteration.
-        z_val = random.choice(list(Z_molecules.keys()))
-        print(f"\tMolecular fomulate taked {z_val}")
-        full_options = Z_molecules[z_val]["options"]
-        z_weighted_options = Z_molecules[z_val]["weighted_options"]
-        lw0 = len(z_weighted_options)
-        if lw0 > 0:
-            r = random.randint(0, len(z_weighted_options)-1)
-        else:
-            r = 0
+    while Nmade < N:
+        while len(processes) >= Nc or N-Nmade <= len(processes) and N-Nmade > 0:
+            time.sleep(0.1)
+            for p in processes:
+                pid = psutil.Process(p.pid)
+                cpu_times = pid.cpu_times()
+                if p.exitcode == 0:
+                    Nmade += 1
+                    print(f"\033[1;34mStructures submitted: {Nmade:04d}/{N:04d}\033[0m")
+                    print(f'\033[1;34m{pid} user time: {cpu_times.user:.2f} seconds, system time: {cpu_times.system:.2f} seconds\033[0m')
+            # Process running
+            processes = [p for p in processes if p.exitcode is None]
 
-        sg_ind = z_weighted_options[r]
-        arg_dict["sg_ind"] = sg_ind
-        arg_dict["sg"] = SpaceGroups[sg_ind]
-        arg_dict["Z_val"] = z_val
-        arg_dict["V_dist"] = Z_molecules[z_val]["V_dist"]
-        full_mols = Z_molecules[z_val]["MOLS"]
-        print(f"\tpicking perm for sg={sg_ind} from stratified options...")
+        if N-Nmade > len(processes):
+            # Choosing a random Z value for each iteration.
+            z_val = random.choice(list(Z_molecules.keys()))
+            print(f"\tMolecular fomulate taked {z_val}")
+            full_options = Z_molecules[z_val]["options"]
+            z_weighted_options = Z_molecules[z_val]["weighted_options"]
+            lw0 = len(z_weighted_options)
+            if lw0 > 0:
+                r = random.randint(0, len(z_weighted_options)-1)
+            else:
+                r = 0
+            sg_ind = z_weighted_options[r]
+            arg_dict["sg_ind"] = sg_ind
+            arg_dict["sg"] = SpaceGroups[sg_ind]
+            arg_dict["Z_val"] = z_val
+            arg_dict["V_dist"] = Z_molecules[z_val]["V_dist"]
+            full_mols = Z_molecules[z_val]["MOLS"]
+            print(f"\tpicking perm for sg={sg_ind} from stratified options...")
+            new_perm = pick_option(full_options[sg_ind])
+            perm = convert_new_SA_to_old(new_perm, SpaceGroups[sg_ind], placement_table, full_mols)
+            perm = [-1, perm]  # modification as now expects [dof, perm]
+            arg_dict["mols"] = full_mols
 
-        new_perm = pick_option(full_options[sg_ind])
-        perm = convert_new_SA_to_old(new_perm, SpaceGroups[sg_ind], placement_table, full_mols)
-        perm = [-1, perm]  # modification as now expects [dof, perm]
-        arg_dict["mols"] = full_mols
+            p = Process(
+                target=make_structures,
+                args=(perm, fname, arg_dict, lock, counter)
+            )
+            p.start()
+            processes.append(p)
 
-        p = Process(
-            target=make_structures,
-            args=(perm, fname, arg_dict, lock, counter)
-        )
-        p.start()
-        processes.append(p)
-
-        Nmade += 1
-        print(f"\033[1;34mStructures submitted: {Nmade:04d}/{N:04d}\033[0m")
     """
     while Nmade < N:
         # 1. Update the number of processes
@@ -520,11 +530,15 @@ def main():
 
     ###############
 
+    # results = []
     for process in processes:
         process.join()
+        # results.append(queue.get())
 
     log_memory_usage("Main process end")
     time.sleep(5)
+
+    # print('Results:', results)
 
     # final_structures = 0
     # for hash_comp in shared_dict_structure:
