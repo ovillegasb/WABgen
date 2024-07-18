@@ -431,7 +431,7 @@ def main():
     # BUCLE central
     ###############
     manager = Manager()
-    shared_dict_structure = manager.dict()
+    # shared_dict_structure = manager.dict()
     counter = manager.Value('i', 0)
     lock = Lock()
     processes = []
@@ -465,7 +465,7 @@ def main():
 
         p = Process(
             target=make_structures,
-            args=(perm, fname, arg_dict, shared_dict_structure, lock, counter)
+            args=(perm, fname, arg_dict, lock, counter)
         )
         p.start()
         processes.append(p)
@@ -526,16 +526,15 @@ def main():
     log_memory_usage("Main process end")
     time.sleep(5)
 
-    final_structures = 0
-    for hash_comp in shared_dict_structure:
-        final_structures += len(shared_dict_structure[hash_comp])
-
-    print('Final shared structures generates:', final_structures)
+    # final_structures = 0
+    # for hash_comp in shared_dict_structure:
+    #     final_structures += len(shared_dict_structure[hash_comp])
+    # print('Final shared structures generates:', final_structures)
     print('Final counter value:', counter.value)
 
-    if final_structures != counter.value:
-        print(bcolors.WARNING + "WARNING!" + bcolors.ENDC, end=" - ")
-        print("The generated structures do not match the counted structures")
+    # if final_structures != counter.value:
+    #     print(bcolors.WARNING + "WARNING!" + bcolors.ENDC, end=" - ")
+    #     print("The generated structures do not match the counted structures")
 
     print('\nAll computations are done')
     print(f"\t\033[1;32mStructures finished: {counter.value:04d}/{N:04d}\033[0m")

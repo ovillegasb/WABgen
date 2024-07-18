@@ -178,7 +178,7 @@ def add_hash(fname, N):
     return fname
 
 
-def make_structures(dof_perm, fname, arg_dict, unique_structures: dict[str, list[Structure]] = defaultdict(list), lock=None, counter=0):
+def make_structures(dof_perm, fname, arg_dict, lock=None, counter=0):
     """Build structures."""
     print(60 * "#")
     print_blue("Running main function from WAMgen - building structure ...")
@@ -204,11 +204,11 @@ def make_structures(dof_perm, fname, arg_dict, unique_structures: dict[str, list
 
     np.random.seed(None)
 
-    # Create the RemoveDuplicatesFilter filter
-    duplicate_filter = RemoveDuplicatesFilter(
-       structure_matcher=matcher,
-       symprec=1e-3
-    )
+    # # Create the RemoveDuplicatesFilter filter
+    # duplicate_filter = RemoveDuplicatesFilter(
+    #    structure_matcher=matcher,
+    #    symprec=1e-3
+    # )
 
     # Where is the process
     cpu = get_cpu_num()
@@ -347,33 +347,33 @@ def make_structures(dof_perm, fname, arg_dict, unique_structures: dict[str, list
             accept = False
             continue
 
-        # Testing duplicates
-        ase_struct = ase.io.read(f_name + ".res")
-        pymatgen_struct = AseAtomsAdaptor.get_structure(ase_struct)
-        if not duplicate_filter.test(pymatgen_struct):
-            # unique_structures[f_name] = pymatgen_struct
-            print("Duplicated structure will be removed and another structure will be created")
-            cmd = "rm -v " + f_name + ".res"
-            # cmd = "mv -v " + f_name + ".res duplicates/"
-            os.system(cmd)
-            n_try -= 1
-            accept = False
-            continue
+        # # Testing duplicates
+        # ase_struct = ase.io.read(f_name + ".res")
+        # pymatgen_struct = AseAtomsAdaptor.get_structure(ase_struct)
+        # if not duplicate_filter.test(pymatgen_struct):
+        #     # unique_structures[f_name] = pymatgen_struct
+        #     print("Duplicated structure will be removed and another structure will be created")
+        #     cmd = "rm -v " + f_name + ".res"
+        #     # cmd = "mv -v " + f_name + ".res duplicates/"
+        #     os.system(cmd)
+        #     n_try -= 1
+        #     accept = False
+        #     continue
 
-        if lock is not None:
-            with lock:
-                # unique_structures.update(duplicate_filter.structure_list)
-                unique_structures = update_structure_list(
-                   unique_structures,
-                   duplicate_filter.structure_list
-                )
-                duplicate_filter.structure_list = defaultdict(list, unique_structures)
-        else:
-            unique_structures = update_structure_list(
-                   unique_structures,
-                   duplicate_filter.structure_list
-                )
-            duplicate_filter.structure_list = defaultdict(list, unique_structures)
+        # if lock is not None:
+        #     with lock:
+        #         # unique_structures.update(duplicate_filter.structure_list)
+        #         unique_structures = update_structure_list(
+        #            unique_structures,
+        #            duplicate_filter.structure_list
+        #         )
+        #         duplicate_filter.structure_list = defaultdict(list, unique_structures)
+        # else:
+        #     unique_structures = update_structure_list(
+        #            unique_structures,
+        #            duplicate_filter.structure_list
+        #         )
+        #     duplicate_filter.structure_list = defaultdict(list, unique_structures)
 
         # move completed file to completed
         cmd = "mv " + f_name + "* ./completed/"
@@ -409,7 +409,7 @@ def make_structures(dof_perm, fname, arg_dict, unique_structures: dict[str, list
     else:
         f_name = "couldn't make with " + str(n_tries) + " attempts " + str(sg_ind)
 
-    exit(1)
+    return 1
 
 
 """
