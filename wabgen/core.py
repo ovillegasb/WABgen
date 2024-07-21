@@ -409,7 +409,7 @@ def make_structures(dof_perm, fname, arg_dict, lock=None, counter=0):
     else:
         f_name = "couldn't make with " + str(n_tries) + " attempts " + str(sg_ind)
 
-    return 1
+    raise ValueError("WABgen has failed to find convergence for this structure")
 
 
 """
