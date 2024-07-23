@@ -4,6 +4,7 @@
 import copy
 import math as m
 import numpy as np
+import ase
 
 
 
@@ -294,6 +295,17 @@ class UnitCell:
       else:
          rs = sorted(rs, key = lambda x: x[0])
          return rs[0]
+
+   def get_ase_struct(self):
+      """Return ASE Atoms."""
+      struct = ase.Atoms()
+      for atom in self.atoms:
+         struct += ase.Atom(atom.label, position=atom.cartCoords)
+
+      struct.set_cell(list(self.lengths) + list(np.rad2deg(self.angles)))
+      struct.set_pbc([True, True, True])
+
+      return struct
 
 
 class Atom:

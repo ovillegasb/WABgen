@@ -97,12 +97,13 @@ def parse_file(fname, st, template=False):
    unit_formular = []
    if "unit_formular" in out:
       for line in out["unit_formular"]:
-        if len(line) == 2:
+        if len(line) == 1:
+           unit_formular = line
+
+        elif len(line) == 2:
            unit_formular = list(range(line[0], line[-1] + 1))
 
-   # print("Z value:\n", unit_formular)
    Z_molecules = {z: {"MOLS": [], "V_dist": None} for z in unit_formular}
-   # print("Nueva estructura:", Z_molecules)
 
    # parse in the cell
    cell_abc = []
@@ -110,7 +111,6 @@ def parse_file(fname, st, template=False):
       for line in out["lattice_abc"]:
          for x in line:
             cell_abc.append(float(x))
-   # print("cell_abc:\n", cell_abc)
 
    # append the molecules to the mols object
    mols = []

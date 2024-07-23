@@ -10,14 +10,12 @@ import random
 import psutil
 import sys
 import time
+import multiprocessing
 import numpy as np
-from collections import defaultdict
 from func_timeout import FunctionTimedOut
 from pymatgen.symmetry.analyzer import PointGroupAnalyzer as PGA
 from pymatgen.symmetry.groups import PointGroup as PymatPointGroup
 from pymatgen.core.structure import IMolecule
-from pymatgen.analysis.structure_matcher import StructureMatcher
-from pymatgen.alchemy.filters import RemoveDuplicatesFilter
 from pymatgen.io.ase import AseAtomsAdaptor
 from pymatgen.core import Structure
 from wabgen.utils.data import get_atomic_data
@@ -30,7 +28,6 @@ from wabgen.utils.makecell import make_cell
 from wabgen.utils.radialpp_bfgs2 import push_apart as flex_push_apart
 from wabgen.utils.filter import test_mof_structure
 import wabgen.io
-import ase.io
 
 
 # find the directory
@@ -83,16 +80,6 @@ HMPointGroupSymbols = [
 metals = [
    "Pb"
 ]
-
-# Initializing the StructureMatcher
-matcher = StructureMatcher(
-    ltol=0.2,
-    stol=0.3,
-    angle_tol=5.0,
-    primitive_cell=True,
-    scale=True,
-    attempt_supercell=True
-)
 
 
 def get_cpu_num():
@@ -179,15 +166,39 @@ def add_hash(fname, N):
     return fname
 
 
-def make_test(dof_perm, fname, arg_dict, lock=None, counter=0):
+def generate_structure_test():
+    """Generate a structure test using pymatgen."""
+    STRUCT = [
+      Structure.from_spacegroup(
+        "P1", lattice=np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), species=["Li1"], coords=[[0, 0, 0]]
+      ),
+      Structure.from_spacegroup(
+        "P1", lattice=np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), species=["Li1"], coords=[[0, 0, 0]]
+      )
+    ]
+
+    return random.choice(STRUCT)
+
+
+def make_test(dof_perm, fname, arg_dict, lock=None, counter=0, result_queue=None):
     """Test main boucle."""
     print(60 * "#")
     print_blue(f"Running main function from WAMgen - building structure ... {counter.value}")
-    time.sleep(5)
+    time.sleep(1)
+    cpu = get_cpu_num()
     status = random.choice([True, False])
     if status:
-        print(f'{fname} exiting with error code 1')
+        print(f'\033[1;37m{fname} exiting with error code 1\033[0m')
         sys.exit(1)  # Exit with error code 1
+
+    struct = generate_structure_test()
+    print(struct)
+
+    response_q = multiprocessing.Manager().Queue()
+    result_queue.put((cpu, struct, response_q))
+    is_duplicate = response_q.get()
+    if is_duplicate:
+        print("Pues resulta que si lo es")
 
     if lock is not None:
         with lock:
@@ -199,7 +210,7 @@ def make_test(dof_perm, fname, arg_dict, lock=None, counter=0):
     return 0
 
 
-def make_structures(dof_perm, fname, arg_dict, lock=None, counter=0):
+def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_queue=None):
     """Build structures."""
     print(60 * "#")
     print_blue("Running main function from WAMgen - building structure ...")
@@ -224,12 +235,6 @@ def make_structures(dof_perm, fname, arg_dict, lock=None, counter=0):
     push_apart = arg_dict["push_apart"]
 
     np.random.seed(None)
-
-    # # Create the RemoveDuplicatesFilter filter
-    # duplicate_filter = RemoveDuplicatesFilter(
-    #    structure_matcher=matcher,
-    #    symprec=1e-3
-    # )
 
     # Where is the process
     cpu = get_cpu_num()
@@ -299,13 +304,12 @@ def make_structures(dof_perm, fname, arg_dict, lock=None, counter=0):
                 if noverlap >= overlap_max:
                     print("noverlap is", noverlap)
                     continue
-            if "sg" in arg_dict:
-                sg = arg_dict["sg"]
-            else:
-                sg = SpaceGroups[sg_ind]
 
+            sg = arg_dict["sg"]
             try:
-                accept, cell = flex_push_apart(cell, sg, min_seps, P=pressure, target_atom_nums=target_atom_nums)
+                accept, cell = flex_push_apart(
+                  cell, sg, min_seps, P=pressure, target_atom_nums=target_atom_nums
+                )
             except ZeroDivisionError:
                 accept = False
 
@@ -336,20 +340,23 @@ def make_structures(dof_perm, fname, arg_dict, lock=None, counter=0):
         f_name = add_hash(f_name, 8)
         print_blue("system name: {}".format(f_name.split("/")[-1]))
 
-        # H should always be define, often 0
-        print_blue(f"writing res with P={P} and E={H}")
-        wabgen.io.write_res(f_name, cell, E=H, P=P)
+        # Extract ASE atoms
+        ase_struct = cell.get_ase_struct()
+        print(ase_struct)
 
         # Testing filter distances
+        print("Checking distances...")
         metal_center = set()
         for at in cell.atoms:
             if at.label in metals:
                 metal_center.add(at.label)
 
         metal_center = "".join(list(metal_center))
+        print(metal_center)
+
         try:
             rejected = test_mof_structure(
-               f_name + ".res",
+               ase_struct,
                metal_center,
                radius=5.00,
                cutoff=3.28,
@@ -366,33 +373,21 @@ def make_structures(dof_perm, fname, arg_dict, lock=None, counter=0):
             accept = False
             continue
 
-        # # Testing duplicates
-        # ase_struct = ase.io.read(f_name + ".res")
-        # pymatgen_struct = AseAtomsAdaptor.get_structure(ase_struct)
-        # if not duplicate_filter.test(pymatgen_struct):
-        #     # unique_structures[f_name] = pymatgen_struct
-        #     print("Duplicated structure will be removed and another structure will be created")
-        #     cmd = "rm -v " + f_name + ".res"
-        #     # cmd = "mv -v " + f_name + ".res duplicates/"
-        #     os.system(cmd)
-        #     n_try -= 1
-        #     accept = False
-        #     continue
+        # Testing duplicates
+        print("Checking duplicates...")
+        pymatgen_struct = AseAtomsAdaptor.get_structure(ase_struct)
+        print(pymatgen_struct)
 
-        # if lock is not None:
-        #     with lock:
-        #         # unique_structures.update(duplicate_filter.structure_list)
-        #         unique_structures = update_structure_list(
-        #            unique_structures,
-        #            duplicate_filter.structure_list
-        #         )
-        #         duplicate_filter.structure_list = defaultdict(list, unique_structures)
-        # else:
-        #     unique_structures = update_structure_list(
-        #            unique_structures,
-        #            duplicate_filter.structure_list
-        #         )
-        #     duplicate_filter.structure_list = defaultdict(list, unique_structures)
+        response_q = multiprocessing.Manager().Queue()
+        result_queue.put((cpu, pymatgen_struct, response_q))
+        is_duplicate = response_q.get()
+        if is_duplicate:
+            accept = False
+            continue
+
+        # H should always be define, often 0
+        print_blue(f"writing res with P={P} and E={H}")
+        wabgen.io.write_res(f_name, cell, E=H, P=P)
 
         # move completed file to completed
         cmd = "mv " + f_name + "* ./completed/"
@@ -427,234 +422,6 @@ def make_structures(dof_perm, fname, arg_dict, lock=None, counter=0):
 
     print("WABgen has failed to find convergence for this structure")
     sys.exit(1)
-
-
-"""
-   if "return_cell" not in arg_dict:
-      arg_dict["return_cell"] = False
-
-   #check if only have atoms
-   only_atoms = True
-   for mol in mols:
-      if mol.Otype == "Mol":
-         only_atoms = False
-
-   '''
-   if target_atom_nums is not None:
-      add_centre = True
-   else:
-      add_centre = False
-   '''
-   add_centre = False
-   #print("push_apart is", arg_dict["push_apart"])
-
-   while not accept and n_try < n_tries and N_supercells < n_SC and N_supergroup < n_SG and len(vols) < n_vol:
-      n_try += 1
-      log = {}
-
-      #######################################################################################
-      if not arg_dict["push_apart"]:
-         print("NOT PUSHING APART")
-         #NOTE sometimes this doesn't seem to work...
-         print("V_dist is", V_dist)
-         print("cell_abc is", cell_abc)
-
-         all_details, cell = make_cell(mols, sg_ind, perm, V_dist, cell_abc, Rot_dicts, add_centre)
-         if only_atoms:
-
-            from utils.python_functions.cell import check_all_minseps
-            accept = check_all_minseps(cell, min_seps = arg_dict["min_seps"])
-         else:
-            accept = check_min_seps(cell, arg_dict["min_seps"])
-         if not accept:
-            continue
-         H = 0
-
-
-      #######################################################################################
-      elif arg_dict["push_apart"] in ["flexible"]:
-         #pa_profile = start_profiling()
-
-         overlap_accept = False
-         noverlap = 0
-         overlap_max = 30
-
-         #hack for volume distribution
-         #pick a volume then increase it by 1% each failed overlap attemp
-         #use uniform distribution to specify volume exactly
-         func, args, kwargs = wabgen.io.line_to_func(V_dist)
-         args = [float(x) for x in args]
-         for key, item in kwargs.items():
-            kwargs[key] = float(item)
-         Vtarg = func(*args, **kwargs)
-
-
-         while not overlap_accept:
-            #gradually increase the volume estimate while struggling to make a non-overlapping
-            #guess cell. useful for bad volume estimate and saving time!
-            Vtarg *= 1.01
-            vd = "numpy.random.uniform " + str(Vtarg) + " " + str(Vtarg*1.001)
-            all_details, cell = make_cell(mols, sg_ind, perm, vd, cell_abc, Rot_dicts, add_centre)
-            ls = set([at.label for at in cell.atoms])
-            if "U" in ls:
-               print("U in cell")
-               exit()
-            if cell_abc is None:
-               overlap_accept = overlap_check(cell, all_details)
-            else:
-               overlap_accept = True
-            noverlap += 1
-            if noverlap >= overlap_max:
-               print("noverlap is", noverlap)
-               continue
-         if "sg" in arg_dict:
-            sg = arg_dict["sg"]
-         else:
-            sg = SpaceGroups[sg_ind]
-
-         accept, cell = flex_push_apart(cell, sg, min_seps, P=pressure, target_atom_nums = target_atom_nums)
-         #print("accept and cell are", accept, cell)
-         if accept == False:
-            continue
-         cell.sg_num = sg.number
-         H = cell.vol/len(cell.atoms)
-
-      #######################################################################################
-
-      elif arg_dict["push_apart"] == "gulp":
-         #NOTE do things differently if pusing apart using minseps or potentials
-         accept = False
-         noverlap = 0
-         while not accept:
-            #gradually increase the volume estimate while struggling to make a non-overlapping
-            #guess cell. useful for bad volume estimate and saving time!
-            #print("V_dist is", V_dist)
-            #vd = [1.003**noverlap*x for x in V_dist]
-            vd = V_dist
-            all_details, cell = make_cell(mols, sg_ind, perm, vd, cell_abc, Rot_dicts, add_centre)
-            accept = overlap_check(cell, all_details)
-            noverlap += 1
-
-         from utils.python_functions.gulp_interface import gulp_push_apart
-         cell, Hash, accept, H = gulp_push_apart(cell, all_details, min_seps, SpaceGroups, gulp_ps, pressure)
-         if cell is None:
-            continue
-         cell.sg_num = sg_ind
-         if accept != "success":
-            accept = False
-            if accept not in log:
-               log[accept] = 1
-            else:
-               log[accept] += 1
-            if accept == "super_cell":
-               N_supercells += 1
-            continue
-      '''
-      #######################################################################################
-      elif arg_dict["push_apart"] == "rigid":
-         #use python rigid molecule implementation
-         from utils.python_functions.merger import push_apart
-
-         cell, vars_dict = make_cell_full(mols, sg_ind, perm, V_dist, cell_abc, add_cen=False)
-         H = 0
-         accept, cell = push_apart(cell, min_seps, vars_dict, SpaceGroups, mols)
-         if not accept:
-            continue
-
-      #merge atoms together if needed
-      if target_atom_nums is not None:
-         print("calling merger...")
-         merge_atoms = merger.what_to_merge(cell, target_atom_nums)
-         #check that there are U atoms in cell otherwise merger willl not work!!
-         Us = [at.label for at in cell.atoms if at.label == "U"]
-         assert len(Us) > 0
-         if len(merge_atoms) > 0:
-            sucess, cell = merger.merge_atoms(cell,merge_atoms, merge_groups, ConvSpaceGroups)
-            H = 0
-            if not sucess or not check_min_seps(cell, min_seps):
-               accept=False
-               continue
-      '''
-      '''
-      #######################################################################################
-      #print("WARNING: FINAL VOLUME CHECK SKIPPED")
-      p = check_volume(cell.vol, V_dist, Ntest=1000)
-      #print("Vdist is", V_dist, "p is", p, "cell volume is", cell.vol)
-      if  p < 1e-2:
-         #NOTE do NOT perform checks if using potentials for gulp e.g. Lennard Jones
-         #TODO write this in a better way, this function has gotten completely out of hand
-         #print("rejecting structure with p=", p)
-         if len(gulp_ps) == 0:
-            accept = False
-            vols.append(cell.vol)
-            continue
-         else:
-            pass
-      '''
-
-      #check to see if made a supercell
-      n_orig = len(cell.atoms)
-      cell = symm.niggli_reduce(cell, to_prim=True)
-      cell.sg_num = sg_ind
-      n_final = len(cell.atoms)
-      H *= n_final/n_orig
-      if arg_dict["no_supercells"] and n_final < n_orig:
-         N_supercells += 1
-         accept = False
-         continue
-
-      #check to see if have made the exact spacegroup in question
-      if arg_dict["exact_sg"] and not check_spacegroup(cell, sg_ind):
-         N_supergroup += 1
-         accept = False
-         continue
-
-
-      
-
-
-      try:
-         if arg_dict["push_apart"] == "flexible":
-            stop_profiling(pa_profile, fout = f_name+"_pa_prof.txt")
-      except:
-         pass
-
-
-      #if required, relax the structures using aenet
-      if aenet_relax:
-         from utils.python_functions.aenet_interface import aenet_geopt
-         good_relax, aed = aenet_geopt(cell, pressure, SpaceGroups, name=f_name)
-         print("good_relax is", good_relax)
-         if good_relax:
-            cell = aed["cell"]
-            H = aed["H"]
-            #niggli reduce
-            n_orig = len(cell.atoms)
-            cell = symm.niggli_reduce(cell, to_prim=True)
-            cell.sg_num = sg_ind
-            n_final = len(cell.atoms)
-            H *= n_final/n_orig
-         else:
-            continue
-
-      if arg_dict["return_cell"]:
-         return True, cell
-
-      
-
-      
-
-
-
-
-
-   if arg_dict["return_cell"]:
-      return False, None
-
-   
-   return 1
-
-"""
 
 
 def pick_option(sg_opts):

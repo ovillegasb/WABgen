@@ -9,6 +9,11 @@ import ase.io
 from ase.data import covalent_radii
 from ase.neighborlist import NeighborList
 from func_timeout import func_set_timeout
+from pymatgen.analysis.structure_matcher import StructureMatcher
+from pymatgen.alchemy.filters import RemoveDuplicatesFilter
+from collections import defaultdict
+from pymatgen.core import Structure
+import queue
 
 
 # Maximum execution time of the function (s).
@@ -111,11 +116,11 @@ def angle_between_vectors(v1, v2):
 
 
 @func_set_timeout(time_limit)
-def test_mof_structure(file, metal_center, radius, cutoff, dist_min, test_count=None):
+def test_mof_structure(struct, metal_center, radius, cutoff, dist_min, test_count=None):
     """Read and return if the MOF enviroment is correct from differents criterias."""
     rejected = False
     # Load structure
-    mof = ase.io.read(file)
+    mof = struct
     # select atoms from ligands
     ligands_indexs = []
     metal_index = []
@@ -213,7 +218,42 @@ def test_mof_structure(file, metal_center, radius, cutoff, dist_min, test_count=
         print("At least one ligand is not connected.")
         print("According to the selected criteria there is no metal-ligand-metal connection.")
         print("The structure will be rejected")
-        print(f"{file} --> ./rejected/{file}")
+        print(f"{struct} --> rejected!")
         rejected = True
 
     return rejected
+
+
+def duplicate_checker(result_queue, stop_event):
+    """Verify duplicate."""
+    # Initializing the StructureMatcher
+    matcher = StructureMatcher(
+        ltol=0.2,
+        stol=0.3,
+        angle_tol=5.0,
+        primitive_cell=True,
+        scale=True,
+        attempt_supercell=True
+    )
+
+    # Create the RemoveDuplicatesFilter filter
+    remove_duplcates = RemoveDuplicatesFilter(
+               structure_matcher=matcher,
+               symprec=1e-3
+            )
+
+    N_duplicates = 0
+    while not stop_event.is_set() or not result_queue.empty():
+        try:
+            generator_id, structure, response_q = result_queue.get(timeout=1)
+            is_duplicate = not remove_duplcates.test(structure)
+            response_q.put(is_duplicate)
+            if is_duplicate:
+                N_duplicates += 1
+                print(f"\033[95mStructure duplicated in p({generator_id}) - N={N_duplicates}\033[0m")
+            else:
+                # Structure preserved
+                print(f"\033[95mStructure generated in p({generator_id}) is not a duplicate  - N={N_duplicates}\033[0m")
+
+        except queue.Empty:
+            continue

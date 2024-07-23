@@ -12,10 +12,11 @@ from wabgen.io import parse_file, prepare_output_directory
 from wabgen.core import SG, standardize_Molecule, pick_option
 from wabgen.utils import symm
 from wabgen.utils.align import read_rotation_dict
-from wabgen.utils.profile import start_profiling
 from wabgen.utils.allocate import zero_site_allocation, new_site_allocation, convert_new_SA_to_old
-from wabgen.core import placement_table, weight_spacegroups, make_structures, log_memory_usage, make_test
-from multiprocessing import Process, Manager, Lock
+from wabgen.core import placement_table, weight_spacegroups, log_memory_usage, make_test
+from wabgen.core import structure_generator
+from wabgen.utils.filter import duplicate_checker
+from multiprocessing import Process, Manager, Lock, Queue, Event
 
 
 # find the directory
@@ -25,11 +26,27 @@ directory = os.path.dirname(__file__)
 cwd = os.getcwd()
 
 
-class font_colors:
-    """Color font class."""
+class colors:
+    """
+    Colors class.
 
-    RED = '\033[31m'
-    END = '\033[0m'
+    Reset all colors with colors.reset; two sub classes fg for foreground and bg for
+    background; use as colors.subclass.colorname.
+
+    i.e. colors.fg.red or colors.bg.greenalso, the generic bold, disable, underline, reverse,
+    strike through, and invisible work with the main class i.e. colors.bold
+    """
+
+    reset = '\033[0m'
+    bold = '\033[01m'
+
+    class fg:
+        """Foreground colors."""
+
+        red = '\033[31m'
+        green = '\033[32m'
+        purple = '\033[35m'
+        lightgrey = '\033[37m'
 
 
 TITLE = """\033[1;36m
@@ -53,6 +70,8 @@ Date: 2024-07-08
 Example:
 
 python -m wabgen system.cell -n 100 --push_apart flexible --parallel
+
+python -m wabgen system.cell -n 100 --push_apart flexible --parallel --sg_list 1
 
 """
 
@@ -245,15 +264,6 @@ def main():
     pressure = params["pressure"]
     Z_molecules = params["Z_molecules"]
 
-    # for mol in mols:
-    #     mol.print_symm_info()
-
-    # for z in Z_molecules:
-    #     print("Z=", z)
-    #     mols_z = Z_molecules[z]["MOLS"]
-    #     for mol in mols_z:
-    #         mol.print_symm_info()
-
     # generate all instances of the spacegroup class here, should speed things up!
     t_i = time.time()
     print("reading in spacegroup representation")
@@ -273,17 +283,17 @@ def main():
     temp_fname = directory + "/data/templates.cell"
     Rot_dicts = {}
     for i, mol in enumerate(mols):
-        print(i, mol)
+        # print(i, mol)
         mol.print_symm_info()
         mols[i] = standardize_Molecule(mol, temp_fname, args["symmetry_tolerance"])
         if mol.Otype == "Mol":
             Rot_dicts[mol.name] = read_rotation_dict(mols[i], SpaceGroups)
 
     for z in Z_molecules:
-        print("Z=", z)
+        # print("Z=", z)
         mols_z = Z_molecules[z]["MOLS"]
         for i, mol in enumerate(mols_z):
-            print(i, mol)
+            # print(i, mol)
             mol.print_symm_info()
             Z_molecules[z]["MOLS"][i] = standardize_Molecule(
                 mol, temp_fname, args["symmetry_tolerance"]
@@ -297,17 +307,6 @@ def main():
     if sg_list is None:
         sg_list = [x for x in range(sgb[0], sgb[1]+1)]
 
-    # TODO
-    # p = start_profiling()
-
-    # TODO
-    # only_atoms = True
-    # for mol in mols:
-    #     if mol.Otype == "Mol":
-    #         only_atoms = False
-
-    ####
-    # TODO
     t_i = time.time()
     new_options = {}
     # generating ooptions for z
@@ -405,8 +404,6 @@ def main():
     execution_time = t_f - t_i
     print("done in %.3f s" % execution_time)
 
-    ####
-
     # set the base file name
     fname = cwd + "/" + seed.replace(".cell", "")
 
@@ -437,10 +434,22 @@ def main():
     counter = manager.Value('i', 0)
     lock = Lock()
     processes = []
+    # Make and run the process to verify duplicates
+    result_queue = Manager().Queue()
+    stop_event = Event()
+    checker = Process(target=duplicate_checker, args=(result_queue, stop_event))
+    checker.start()
+
     log_memory_usage("Main process start")
-    time.sleep(5)
+    time.sleep(1)
     while counter.value < N:
-        while len(processes) >= Nc or (N - counter.value <= len(processes) and N-counter.value > 0):
+        if counter.value == N:
+            break
+        # Print some information
+        print(f"{colors.bold}{colors.fg.green}------------------------------------{colors.reset}")
+        print(f"{colors.bold}{colors.fg.red}Main BUCLE{colors.reset}")
+        print(f"{colors.bold}{colors.fg.red}N Process: {len(processes)}{colors.reset}")
+        while len(processes) >= Nc-1 or (N-counter.value <= len(processes) and N-counter.value > 0):
             time.sleep(0.1)
             for p in processes:
                 try:
@@ -484,43 +493,31 @@ def main():
             if args["test"]:
                 p = Process(
                     target=make_test,
-                    args=(perm, fname, arg_dict, lock, counter)
+                    args=(perm, fname, arg_dict, lock, counter, result_queue)
                 )
             else:
                 p = Process(
-                    target=make_structures,
-                    args=(perm, fname, arg_dict, lock, counter)
+                    target=structure_generator,
+                    args=(perm, fname, arg_dict, lock, counter, result_queue)
                 )
 
-            time.sleep(0.5)
             if len(processes) < N - counter.value:
-                print("Send process")
                 p.start()
                 processes.append(p)
+                print(f"{colors.fg.green}Sent process -> ({len(processes)}){colors.reset}")
 
-        if counter.value == N:
-            break
+        print(f"{colors.bold}{colors.fg.red}N Structures generated: {counter.value}{colors.reset}")
+        print(f"{colors.bold}{colors.fg.purple}------------------------------------{colors.reset}")
 
     # results = []
     for process in processes:
         process.join()
         # results.append(queue.get())
 
+    stop_event.set()
+    checker.join()
+
     log_memory_usage("Main process end")
-    time.sleep(5)
-
-    # print('Results:', results)
-
-    # final_structures = 0
-    # for hash_comp in shared_dict_structure:
-    #     final_structures += len(shared_dict_structure[hash_comp])
-    # print('Final shared structures generates:', final_structures)
-    print('Final counter value:', counter.value)
-
-    # if final_structures != counter.value:
-    #     print(bcolors.WARNING + "WARNING!" + bcolors.ENDC, end=" - ")
-    #     print("The generated structures do not match the counted structures")
-
     print('\nAll computations are done')
     print(f"\t\033[1;32mStructures finished: {counter.value:04d}/{N:04d}\033[0m")
 
