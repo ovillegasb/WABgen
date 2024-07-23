@@ -190,8 +190,8 @@ def test_mof_structure(file, metal_center, radius, cutoff, dist_min, test_count=
         ligands[lig]["angle_mean"] = angles_m.mean() if angles_m.size > 0 else 0.0
         ligands[lig]["N_metals"] = len(metals_neighbors)
 
-        lignand_connect = pd.DataFrame(lig_connectivity).T
-        print(lignand_connect)
+        # lignand_connect = pd.DataFrame(lig_connectivity).T
+        # print(lignand_connect)
 
     info_ligand_connection = pd.DataFrame(ligands).T
     print("\nSummary of ligand atom connections:")
@@ -210,7 +210,7 @@ def test_mof_structure(file, metal_center, radius, cutoff, dist_min, test_count=
         print("The structure has been preserved!")
         print("At least one ligand is connected to two different metal centers.")
     else:
-        print("No ligand is connected to two different metal centers.")
+        print("At least one ligand is not connected.")
         print("According to the selected criteria there is no metal-ligand-metal connection.")
         print("The structure will be rejected")
         print(f"{file} --> ./rejected/{file}")

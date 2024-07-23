@@ -14,8 +14,8 @@ from wabgen.utils import symm
 from wabgen.utils.align import read_rotation_dict
 from wabgen.utils.profile import start_profiling
 from wabgen.utils.allocate import zero_site_allocation, new_site_allocation, convert_new_SA_to_old
-from wabgen.core import placement_table, weight_spacegroups, make_structures, log_memory_usage
-from multiprocessing import Process, Manager, Lock, Queue
+from wabgen.core import placement_table, weight_spacegroups, make_structures, log_memory_usage, make_test
+from multiprocessing import Process, Manager, Lock
 
 
 # find the directory
@@ -25,16 +25,11 @@ directory = os.path.dirname(__file__)
 cwd = os.getcwd()
 
 
-class bcolors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    OKCYAN = '\033[96m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[91m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
+class font_colors:
+    """Color font class."""
+
+    RED = '\033[31m'
+    END = '\033[0m'
 
 
 TITLE = """\033[1;36m
@@ -185,6 +180,12 @@ ve")
         type=int,
         default=1e3,
         help="max options before truncating enumeration"
+    )
+
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        default=False
     )
 
     return vars(parser.parse_args())
@@ -436,26 +437,30 @@ def main():
     counter = manager.Value('i', 0)
     lock = Lock()
     processes = []
-    Nmade = 0
     log_memory_usage("Main process start")
     time.sleep(5)
-    while Nmade < N:
-        while len(processes) >= Nc or N-Nmade <= len(processes) and N-Nmade > 0:
+    while counter.value < N:
+        while len(processes) >= Nc or (N - counter.value <= len(processes) and N-counter.value > 0):
             time.sleep(0.1)
             for p in processes:
-                pid = psutil.Process(p.pid)
-                cpu_times = pid.cpu_times()
-                if p.exitcode == 0:
-                    Nmade += 1
-                    print(f"\033[1;34mStructures submitted: {Nmade:04d}/{N:04d}\033[0m")
-                    print(f'\033[1;34m{pid} user time: {cpu_times.user:.2f} seconds, system time: {cpu_times.system:.2f} seconds\033[0m')
+                try:
+                    pid = psutil.Process(p.pid)
+                    cpu_times = pid.cpu_times()
+                    if p.exitcode == 0:
+                        # Nmade += 1
+                        print(f"\033[1;34mStructures submitted: {counter.value:04d}/{N:04d}\033[0m")
+                        print(f'\033[1;34m{pid} user time: {cpu_times.user:.3f} seconds, system time: {cpu_times.system:.3f} seconds\033[0m')
+                except psutil.NoSuchProcess:
+                    # El proceso ya no existe, podemos continuar
+                    print(f"\033[1;33mProcess {p.pid} no longer exists.\033[0m")
+
             # Process running
             processes = [p for p in processes if p.exitcode is None]
 
-        if N-Nmade > len(processes):
+        if counter.value < N:
             # Choosing a random Z value for each iteration.
             z_val = random.choice(list(Z_molecules.keys()))
-            print(f"\tMolecular fomulate taked {z_val}")
+            print(f"\tMolecular formula Z={z_val}")
             full_options = Z_molecules[z_val]["options"]
             z_weighted_options = Z_molecules[z_val]["weighted_options"]
             lw0 = len(z_weighted_options)
@@ -469,66 +474,32 @@ def main():
             arg_dict["Z_val"] = z_val
             arg_dict["V_dist"] = Z_molecules[z_val]["V_dist"]
             full_mols = Z_molecules[z_val]["MOLS"]
-            print(f"\tpicking perm for sg={sg_ind} from stratified options...")
+            print(f"\tpicking perm for sg={sg_ind} from stratified options.")
             new_perm = pick_option(full_options[sg_ind])
             perm = convert_new_SA_to_old(new_perm, SpaceGroups[sg_ind], placement_table, full_mols)
             perm = [-1, perm]  # modification as now expects [dof, perm]
             arg_dict["mols"] = full_mols
 
-            p = Process(
-                target=make_structures,
-                args=(perm, fname, arg_dict, lock, counter)
-            )
-            p.start()
-            processes.append(p)
-
-    """
-    while Nmade < N:
-        # 1. Update the number of processes
-        print(Nmade)
-        time.sleep(5)
-        while len(procs) >= Nc or N-Nmade <= len(procs) and N-Nmade > 0:
-            time.sleep(0.1)
-            for p in procs:
-                if p.exitcode == 0:
-                    Nmade += 1
-                    print("\r", Nmade, "/", N, end="")
-            procs = [p for p in procs if p.exitcode is None]
-
-        # 2. Spawn a new process
-        if N-Nmade > len(procs):
-            # Choosing a random Z value for each iteration
-            z_val = random.choice(list(Z_molecules.keys()))
-
-            full_options = Z_molecules[z_val]["options"]
-            z_weighted_options = Z_molecules[z_val]["weighted_options"]
-            lw0 = len(z_weighted_options)
-
-            if lw0 > 0:
-                r = random.randint(0, len(z_weighted_options)-1)
+            # make test
+            if args["test"]:
+                p = Process(
+                    target=make_test,
+                    args=(perm, fname, arg_dict, lock, counter)
+                )
             else:
-                r = 0
+                p = Process(
+                    target=make_structures,
+                    args=(perm, fname, arg_dict, lock, counter)
+                )
 
-            sg_ind = z_weighted_options[r]
-            arg_dict["sg_ind"] = sg_ind
-            arg_dict["sg"] = SpaceGroups[sg_ind]
-            arg_dict["Z_val"] = z_val
-            arg_dict["V_dist"] = Z_molecules[z_val]["V_dist"]
-            full_mols = Z_molecules[z_val]["MOLS"]
+            time.sleep(0.5)
+            if len(processes) < N - counter.value:
+                print("Send process")
+                p.start()
+                processes.append(p)
 
-            print(f"picking perm for sg={sg_ind} from stratified options...")
-            new_perm = pick_option(full_options[sg_ind])
-            perm = convert_new_SA_to_old(new_perm, SpaceGroups[sg_ind], placement_table, full_mols)
-            perm = [-1, perm]  # modification as now expects [dof, perm]
-            arg_dict["mols"] = full_mols
-
-            p = Process(target=make_structures, args=(perm, fname, arg_dict))
-            p.start()
-            procs.append(p)
-            processes.append(p)
-    """
-
-    ###############
+        if counter.value == N:
+            break
 
     # results = []
     for process in processes:

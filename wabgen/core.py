@@ -8,6 +8,7 @@ import copy
 import math
 import random
 import psutil
+import sys
 import time
 import numpy as np
 from collections import defaultdict
@@ -178,6 +179,26 @@ def add_hash(fname, N):
     return fname
 
 
+def make_test(dof_perm, fname, arg_dict, lock=None, counter=0):
+    """Test main boucle."""
+    print(60 * "#")
+    print_blue(f"Running main function from WAMgen - building structure ... {counter.value}")
+    time.sleep(5)
+    status = random.choice([True, False])
+    if status:
+        print(f'{fname} exiting with error code 1')
+        sys.exit(1)  # Exit with error code 1
+
+    if lock is not None:
+        with lock:
+            counter.value += 1
+
+    print('\033[1;32mfinished successfully\033[0m')
+    print(60 * "#")
+
+    return 0
+
+
 def make_structures(dof_perm, fname, arg_dict, lock=None, counter=0):
     """Build structures."""
     print(60 * "#")
@@ -214,7 +235,6 @@ def make_structures(dof_perm, fname, arg_dict, lock=None, counter=0):
     cpu = get_cpu_num()
     print_blue(f"Process is running on CPU {cpu}")
     log_memory_usage(f"{cpu} start")
-    time.sleep(5)
 
     sg = arg_dict["sg"]
     print_blue(f"Spacegroup: {sg.name}")
@@ -340,10 +360,9 @@ def make_structures(dof_perm, fname, arg_dict, lock=None, counter=0):
             rejected = True
 
         if rejected:
-            cmd = "rm -v " + f_name + ".res"
+            cmd = "rm " + f_name + ".res"
             # cmd = "mv -v " + f_name + ".res rejected/"
             os.system(cmd)
-            n_try -= 1
             accept = False
             continue
 
@@ -377,23 +396,20 @@ def make_structures(dof_perm, fname, arg_dict, lock=None, counter=0):
 
         # move completed file to completed
         cmd = "mv " + f_name + "* ./completed/"
-        print("cmd is", cmd)
         os.system(cmd)
 
-        if lock is not None:
-            with lock:
-                counter.value += 1
+        with lock:
+            counter.value += 1
 
+        print('\033[1;32mfinished successfully\033[0m')
         print(60 * "#")
-        print("Finished, next structure ...")
         log_memory_usage(f"{cpu} end")
-        time.sleep(5)
 
         return 0
 
     # if here then failed to make the allocation
     print(f"failed to make the allocation tried {n_try} times from max allowed of {n_tries}" )       #TODO look at this bit!
-    print("perm is", perm)
+    # print("perm is", perm)
     if N_supercells >= n_SC and arg_dict["no_supercells"]:
         f_name = "rejected because supercell " + str(sg_ind)
 
@@ -409,7 +425,8 @@ def make_structures(dof_perm, fname, arg_dict, lock=None, counter=0):
     else:
         f_name = "couldn't make with " + str(n_tries) + " attempts " + str(sg_ind)
 
-    raise ValueError("WABgen has failed to find convergence for this structure")
+    print("WABgen has failed to find convergence for this structure")
+    sys.exit(1)
 
 
 """
