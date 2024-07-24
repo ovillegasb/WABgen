@@ -342,7 +342,6 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
 
         # Extract ASE atoms
         ase_struct = cell.get_ase_struct()
-        print(ase_struct)
 
         # Testing filter distances
         print("Checking distances...")
@@ -355,7 +354,6 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
             raise Exception("No metallic center was found in the database.")
 
         metal_center = "".join(list(metal_center))
-        print(metal_center)
 
         try:
             rejected = test_mof_structure(
@@ -376,14 +374,18 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
         # Testing duplicates
         print("Checking duplicates...")
         pymatgen_struct = AseAtomsAdaptor.get_structure(ase_struct)
-        print(pymatgen_struct)
 
         response_q = multiprocessing.Manager().Queue()
-        result_queue.put((cpu, pymatgen_struct, response_q))
+        N_replicates_q = multiprocessing.Manager().Queue()
+        result_queue.put((cpu, pymatgen_struct, response_q, N_replicates_q))
         is_duplicate = response_q.get()
+        N_duplicates = N_replicates_q.get()
         if is_duplicate:
+            print(f"\033[95mStructure duplicated - N={N_duplicates}\033[0m")
             accept = False
             continue
+        else:
+            print(f"\033[95mStructure generated is not a duplicate - N={N_duplicates}\033[0m")
 
         # H should always be define, often 0
         print_blue(f"writing res with P={P} and E={H}")

@@ -250,15 +250,16 @@ def duplicate_checker(result_queue, stop_event):
     while not stop_event.is_set() or not result_queue.empty():
         cpu = wabgen.core.get_cpu_num()
         try:
-            generator_id, structure, response_q = result_queue.get(timeout=1)
+            generator_id, structure, response_q, N_duplicates_q = result_queue.get(timeout=1)
             is_duplicate = not remove_duplcates.test(structure)
             response_q.put(is_duplicate)
             if is_duplicate:
                 N_duplicates += 1
-                print(f"\033[95mStructure duplicated in p({generator_id}) - N={N_duplicates} - cpu({cpu})\033[0m")
-            else:
-                # Structure preserved
-                print(f"\033[95mStructure generated in p({generator_id}) is not a duplicate  - N={N_duplicates} - cpu({cpu})\033[0m")
+                # print(f"\033[95mStructure duplicated in p({generator_id}) - N={N_duplicates} - cpu({cpu})\033[0m")
+            # else:
+            #     # Structure preserved
+            #     # print(f"\033[95mStructure generated in p({generator_id}) is not a duplicate  - N={N_duplicates} - cpu({cpu})\033[0m")
+            N_duplicates_q.put(N_duplicates)
 
         except queue.Empty:
             continue

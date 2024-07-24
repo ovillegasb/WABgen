@@ -242,6 +242,13 @@ def main():
     print("\t{:<35}{:>20}".format("Number of cpus: ", Nc + 1))
     print("\t{:<35}{:>20}".format("Number of files to generate: ", N))
     print("\t{:<35}{:>20}".format("Output format: ", form))
+    if sg_list is not None:
+        if len(sg_list) == 1:
+            sgb = sg_list.copy()
+        else:
+            sgb = sorted(sg_list.copy())
+            sgb = [sgb[0], sgb[-1]]
+
     print("\t{:<35}{:>20}".format("Range of selected spacegroups: ", "-".join(
         [str(i) for i in sgb]
     )))
@@ -440,7 +447,10 @@ def main():
     checker = Process(target=duplicate_checker, args=(result_queue, stop_event))
     checker.start()
     checker_process = psutil.Process(checker.pid)
-    checker_process.cpu_affinity([0])
+    try:
+        checker_process.cpu_affinity([0])
+    except OSError:
+        pass
 
     log_memory_usage("Main process start")
     while counter.value <= N:
