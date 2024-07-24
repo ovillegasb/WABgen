@@ -351,6 +351,9 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
             if at.label in metals:
                 metal_center.add(at.label)
 
+        if len(metals) == 0:
+            raise Exception("No metallic center was found in the database.")
+
         metal_center = "".join(list(metal_center))
         print(metal_center)
 
@@ -367,9 +370,6 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
             rejected = True
 
         if rejected:
-            cmd = "rm " + f_name + ".res"
-            # cmd = "mv -v " + f_name + ".res rejected/"
-            os.system(cmd)
             accept = False
             continue
 

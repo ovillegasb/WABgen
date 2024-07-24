@@ -439,17 +439,18 @@ def main():
     stop_event = Event()
     checker = Process(target=duplicate_checker, args=(result_queue, stop_event))
     checker.start()
+    checker_process = psutil.Process(checker.pid)
+    checker_process.cpu_affinity([0])
 
     log_memory_usage("Main process start")
-    time.sleep(1)
-    while counter.value < N:
+    while counter.value <= N:
         if counter.value == N:
             break
         # Print some information
         print(f"{colors.bold}{colors.fg.green}------------------------------------{colors.reset}")
         print(f"{colors.bold}{colors.fg.red}Main BUCLE{colors.reset}")
-        print(f"{colors.bold}{colors.fg.red}N Process: {len(processes)}{colors.reset}")
-        while len(processes) >= Nc-1 or (N-counter.value <= len(processes) and N-counter.value > 0):
+        print(f"{colors.bold}{colors.fg.red}N Process: {len(processes)}/{Nc}{colors.reset}")
+        while len(processes) >= Nc or (N-counter.value <= len(processes) and N-counter.value > 0):
             time.sleep(0.1)
             for p in processes:
                 try:
@@ -507,6 +508,8 @@ def main():
                 print(f"{colors.fg.green}Sent process -> ({len(processes)}){colors.reset}")
 
         print(f"{colors.bold}{colors.fg.red}N Structures generated: {counter.value}{colors.reset}")
+        memory_info = checker_process.memory_info()
+        print(f"\033[95mChecker process memory usage: RSS={memory_info.rss / (1024 * 1024):.2f} MB, VMS={memory_info.vms / (1024 * 1024):.2f} MB\033[0m")
         print(f"{colors.bold}{colors.fg.purple}------------------------------------{colors.reset}")
 
     # results = []
