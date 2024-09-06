@@ -16,7 +16,7 @@ from wabgen.utils.allocate import zero_site_allocation, new_site_allocation, con
 from wabgen.core import placement_table, weight_spacegroups, log_memory_usage, make_test
 from wabgen.core import structure_generator
 from wabgen.utils.filter import duplicate_checker
-from multiprocessing import Process, Manager, Lock, Queue, Event
+from multiprocessing import Process, Manager, Lock, Event
 
 
 # find the directory

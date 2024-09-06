@@ -27,6 +27,7 @@ from wabgen.utils import symm
 from wabgen.utils.makecell import make_cell
 from wabgen.utils.radialpp_bfgs2 import push_apart as flex_push_apart
 from wabgen.utils.filter import test_mof_structure
+from wabgen.utils.castep import general_castep_parse
 import wabgen.io
 
 
@@ -78,7 +79,14 @@ HMPointGroupSymbols = [
 """
 
 metals = [
-   "Pb"
+   'Li', 'Be',
+   'Na', 'Mg', 'Al',
+   'K', 'Ca', 'Sc', 'Ti', 'V', 'Cr', 'Mn', 'Fe', 'Co', 'Ni', 'Cu', 'Zn', 'Ga', 'Ge',
+   'Rb', 'Sr', 'Y', 'Zr', 'Nb', 'Mo', 'Tc', 'Ru', 'Rh', 'Pd', 'Ag', 'Cd', 'In', 'Sn', 'Sb',
+   'Cs', 'Ba', 'La', 'Ce', 'Pr', 'Nd', 'Pm', 'Sm', 'Eu', 'Gd', 'Tb', 'Dy', 'Ho', 'Er', 'Tm', 'Yb', 'Lu',
+   'Hf', 'Ta', 'W', 'Re', 'Os', 'Ir', 'Pt', 'Au', 'Hg', 'Tl', 'Pb', 'Bi', 'Po',
+   'Fr', 'Ra', 'Ac', 'Th', 'Pa', 'U', 'Np', 'Pu', 'Am', 'Cm', 'Bk', 'Cf', 'Es', 'Fm', 'Md', 'No', 'Lr',
+   'Rf', 'Db', 'Sg', 'Bh', 'Hs', 'Mt', 'Ds', 'Rg', 'Cn', 'Nh', 'Fl', 'Mc', 'Lv', 'Ts', 'Og'
 ]
 
 
@@ -350,9 +358,6 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
             if at.label in metals:
                 metal_center.add(at.label)
 
-        if len(metals) == 0:
-            raise Exception("No metallic center was found in the database.")
-
         metal_center = "".join(list(metal_center))
 
         try:
@@ -374,7 +379,6 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
         # Testing duplicates
         print("Checking duplicates...")
         pymatgen_struct = AseAtomsAdaptor.get_structure(ase_struct)
-
         response_q = multiprocessing.Manager().Queue()
         N_replicates_q = multiprocessing.Manager().Queue()
         result_queue.put((cpu, pymatgen_struct, response_q, N_replicates_q))

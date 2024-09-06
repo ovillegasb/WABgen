@@ -19,6 +19,16 @@ def parallel(eig1, eig2):
     return False
 
 
+def find_perp(u):
+   """find a vector perpendicular to u"""
+   tol = 10 ** -4
+   vs = [np.array([1,0,0]),np.array([0,1,0])]
+   for v in vs:
+      a = np.cross(u,v)
+      if np.linalg.norm(a) > tol:
+         return a
+
+
 def calc_R1(x1,y1):
    #gives a rotation matrix that will rotate x1 onto y1
    #print("x1 and y1 are", x1, y1)
@@ -27,7 +37,7 @@ def calc_R1(x1,y1):
    tol = 10**-12
    if np.linalg.norm(u) < tol:
       #already parallel/anti-parallel
-      if np.dot(x1,y1) > 0:
+      if np.dot(x1, y1) > 0:
          return Id
       else:
          #print("currently anti-parallel")
