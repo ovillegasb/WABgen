@@ -253,6 +253,14 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
     print_blue(f"Spacegroup: {sg.name}")
     # print("sg_ind=", sg_ind, "perm=", perm)
 
+    # check if only have atoms
+    only_atoms = True
+    for mol in mols:
+        if mol.Otype == "Mol":
+            only_atoms = False
+    if only_atoms:
+        print_blue("System with only atoms")
+
     # 0. add some random noise to the minseps
     dic = min_seps[1]
     for el1, d in dic.items():
@@ -279,6 +287,13 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
 
     while not accept and n_try < n_tries and len(vols) < n_vol:
         n_try += 1
+
+        # if not push_apart:
+        #     print("NOT PUSHING APART")
+        #     #TODO what doesn't work hore?
+        #     #NOTE sometimes this doesn't seem to work...
+        #     print("V_dist is", V_dist)
+        #     print("cell_abc is", cell_abc)
 
         if push_apart == "flexible":
             overlap_accept = False
@@ -351,30 +366,31 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
         # Extract ASE atoms
         ase_struct = cell.get_ase_struct()
 
-        # Testing filter distances
-        print("Checking distances...")
-        metal_center = set()
-        for at in cell.atoms:
-            if at.label in metals:
-                metal_center.add(at.label)
+        if not only_atoms:
+            # Testing filter distances
+            print("Checking distances...")
+            metal_center = set()
+            for at in cell.atoms:
+                if at.label in metals:
+                    metal_center.add(at.label)
 
-        metal_center = "".join(list(metal_center))
+            metal_center = "".join(list(metal_center))
 
-        try:
-            rejected = test_mof_structure(
-               ase_struct,
-               metal_center,
-               radius=5.00,
-               cutoff=3.28,
-               dist_min=1.90,
-            )
-        except FunctionTimedOut:
-            print("Function Timed Out. The file will be rejected")
-            rejected = True
+            try:
+                rejected = test_mof_structure(
+                   ase_struct,
+                   metal_center,
+                   radius=5.00,
+                   cutoff=3.28,
+                   dist_min=1.90,
+                )
+            except FunctionTimedOut:
+                print("Function Timed Out. The file will be rejected")
+                rejected = True
 
-        if rejected:
-            accept = False
-            continue
+            if rejected:
+                accept = False
+                continue
 
         # Testing duplicates
         print("Checking duplicates...")

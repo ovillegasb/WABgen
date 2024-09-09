@@ -12,17 +12,17 @@ from wabgen.utils.minimize import steepest_descent as SD
 
 
 def gen_ms_bonds(cell, min_seps):
-   """generates the min_seps distances and bond types, all bond_types are min_seps=2 atm"""
-   msd = min_seps[1]
-   n = len(cell.atoms)
-   bond_dists = np.zeros((n,n))
-   bond_types = np.zeros((n,n),dtype=int)
-   
-   for p, atp in enumerate(cell.atoms):
-      for q, atq in enumerate(cell.atoms):
-         bond_types[p,q] = 2
-         bond_dists[p,q] = msd[atp.label][atq.label]+0.1
-   return bond_dists, bond_types 
+    """Generate the min_seps distances and bond types, all bond_types are min_seps=2 atm."""
+    msd = min_seps[1]
+    n = len(cell.atoms)
+    bond_dists = np.zeros((n, n))
+    bond_types = np.zeros((n, n), dtype=int)
+    for p, atp in enumerate(cell.atoms):
+        for q, atq in enumerate(cell.atoms):
+            bond_types[p, q] = 2
+            bond_dists[p, q] = msd[atp.label][atq.label]+0.1
+
+    return bond_dists, bond_types
 
 
 def gen_mol_bonds(cell, s, u):
@@ -291,12 +291,11 @@ def push_apart(cell, sg, min_seps, scan=False, dft=False, var_range=None, P=1, h
       hyper_ds is number of hyper dimensions per atom"""  
    #print("pushing apart with pressure", P)
    pid = os.getpid()
-   #print("pid is", pid)
-   
- 
-   #standard variable assignment
+   # print("pid is", pid)
+
+   # standard variable assignment
    if len(hyper) != 0:
-      success, cell = hyper_push_apart(cell, sg, min_seps, P, hyper) 
+      success, cell = hyper_push_apart(cell, sg, min_seps, P, hyper)
       return success, cell
 
 
@@ -312,13 +311,13 @@ def push_apart(cell, sg, min_seps, scan=False, dft=False, var_range=None, P=1, h
       print("failed to initialise the atom_variables")
       return False, None
    equivs, asu_inds = sort_equivs(equivs)
-  
+
    if verbose:
       """
       print("vlist is", vlist)
       print("vloc is", vloc)
       print("atom_t_B is", atom_t_B)
-      print("equivs are", equivs)   
+      print("equivs are", equivs)
       print("asu_inds are", asu_inds)
       """
       for vs, loc, mats in zip(vlist, vloc, atom_t_B):
@@ -353,18 +352,18 @@ def push_apart(cell, sg, min_seps, scan=False, dft=False, var_range=None, P=1, h
       bmols, used = aasbu.add_merge_bonds(cell, bmols, u, s, target_atom_nums, equivs, atom_wls, style="random_all")
    bms_dists, bms_types = gen_ms_bonds(cell, min_seps)
    msd = min_seps[1]
-   
+
    #1. have a go using BFGS, switch to monotonic steepest descent if fails
    gnorm = gnorm_tol + 10
    E = Etol + 10
    ngoes = 0
-   opt_dict = {"maxiter":50, "eps":10e-6}
+   opt_dict = {"maxiter": 50, "eps": 10e-6}
    history = []
    gradient_history = []
    conv = False
 
 
-   #sanity check on initial structure   
+   #sanity check on initial structure
    H0, grad_0 = Energy_symm(vlist, vloc, atom_t_B, Q, k, T, bmols, bms_dists, bms_types, sr, P, asu_inds,equivs, debug=False)
    gnorm0 = np.linalg.norm(grad_0)
    n_cell_vars  = Q.shape[1]
@@ -380,11 +379,11 @@ def push_apart(cell, sg, min_seps, scan=False, dft=False, var_range=None, P=1, h
       print("Initial structure has")
       print("E0=%f, H0=%f, gnorm0=%f" % (E0, H0, gnorm0))
       if E0 > 1000 * Etol:
-         f_cell = build_final_cell(vlist, vloc, at_t_B, Q, k, T, cell, sr=sr) 
-         write_res("fail_"+str(round(E0, 0)), f_cell) 
-         write_res("fail_orig"+str(round(E0, 0)), cell) 
+         f_cell = build_final_cell(vlist, vloc, at_t_B, Q, k, T, cell, sr=sr)
+         write_res("fail_"+str(round(E0, 0)), f_cell)
+         write_res("fail_orig"+str(round(E0, 0)), cell)
          print("initial cell has ludicrous energy")
-         return False, f_cell         
+         return False, f_cell
 
 
    while ngoes < 100:
@@ -450,11 +449,9 @@ def push_apart(cell, sg, min_seps, scan=False, dft=False, var_range=None, P=1, h
          if len(history) > 10 and Etest > 100 *Etol:
             print("hopelessly large bond energy, break")
             break
-               
 
-         
       """
-      if len(history) > 5: 
+      if len(history) > 5:
          if abs(history[-4]-history[-1]) < 1e-3:
             #print("flatlined")
             break
@@ -468,15 +465,16 @@ def push_apart(cell, sg, min_seps, scan=False, dft=False, var_range=None, P=1, h
                #print("converged gradient", gradient_history[-4:])
       if conv:
          break
-      """     
+      """
       if conv:
-         break 
+         break
 
-   if E < Etol  and  (gnorm < gnorm_tol or conv):
-      f_cell = build_final_cell(vlist, vloc, at_t_B, Q, k, T, cell, sr=sr) 
+   if E < Etol and (gnorm < gnorm_tol or conv):
+      f_cell = build_final_cell(vlist, vloc, at_t_B, Q, k, T, cell, sr=sr)
       return True, f_cell
+
    else:
-      f_cell = build_final_cell(vlist, vloc, at_t_B, Q, k, T, cell, sr=sr) 
+      f_cell = build_final_cell(vlist, vloc, at_t_B, Q, k, T, cell, sr=sr)
       #write_res("fail_"+str(round(E, 0)), f_cell)
       print("exited but E and gradients did not pass")
       print("E=", E, "Etol=", Etol)

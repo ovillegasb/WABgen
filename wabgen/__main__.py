@@ -8,6 +8,7 @@ import os
 import time
 import random
 import psutil
+import glob
 from wabgen.io import parse_file, prepare_output_directory
 from wabgen.core import SG, standardize_Molecule, pick_option
 from wabgen.utils import symm
@@ -182,29 +183,39 @@ ve")
         default=False
     )
 
-    parser.add_argument(
+    config = parser.add_argument_group(
+        "\033[1;36mConfigure structure generation\033[m")
+
+    config.add_argument(
         "--parallel",
         action="store_true",
         default=False
     )
 
-    parser.add_argument(
-        "-nc",
+    config.add_argument(
+        "-nc", "--n_cpus",
         type=int,
         default=None
     )
 
-    parser.add_argument(
+    config.add_argument(
         "--max_options", "-mo",
         type=int,
         default=1e3,
         help="max options before truncating enumeration"
     )
 
-    parser.add_argument(
+    config.add_argument(
         "--test",
         action="store_true",
         default=False
+    )
+
+    config.add_argument(
+        "--not_reset",
+        action="store_true",
+        default=False,
+        help="Does not delete generated structures contained in the folder “completed”"
     )
 
     return vars(parser.parse_args())
@@ -222,17 +233,19 @@ def main():
     form = args["form"]
     sgb = [args["spacegroup_lower_bound"], args["spacegroup_upper_bound"]]
     sg_list = args["sg_list"]
+    not_reset = args["not_reset"]
     site_mult_restrictions = {}
     site_rank_restrictions = {}
     output_folder = "completed"
+    n_completed = 0
 
     print("\t{:<35}{:>20}".format("Input file: ", seed))
 
     if args["parallel"]:
-        if args["nc"] is None:
+        if args["n_cpus"] is None:
             Nc = os.cpu_count() - 1
         else:
-            Nc = args["nc"] - 1
+            Nc = args["n_cpus"] - 1
     else:
         Nc = 1
 
@@ -255,7 +268,15 @@ def main():
     print("\t{:<35}{:>20}".format("Output folder: ", output_folder))
     print("")
     # Prepare output folder
-    prepare_output_directory(output_folder)
+    removed = prepare_output_directory(output_folder, not_reset)
+    if not removed:
+        n_completed = len(glob.glob(f"./{output_folder}/*.{form}"))
+        print("\t{:<35}{:>20}".format("Number of files generated: ", n_completed))
+
+        if n_completed >= N:
+            print("Completed files meet the generation criteria increase N or delete files.")
+            exit()
+
     # prepare_output_directory("duplicates")
     # prepare_output_directory("rejected")
 
@@ -290,17 +311,14 @@ def main():
     temp_fname = directory + "/data/templates.cell"
     Rot_dicts = {}
     for i, mol in enumerate(mols):
-        # print(i, mol)
         mol.print_symm_info()
         mols[i] = standardize_Molecule(mol, temp_fname, args["symmetry_tolerance"])
         if mol.Otype == "Mol":
             Rot_dicts[mol.name] = read_rotation_dict(mols[i], SpaceGroups)
 
     for z in Z_molecules:
-        # print("Z=", z)
         mols_z = Z_molecules[z]["MOLS"]
         for i, mol in enumerate(mols_z):
-            # print(i, mol)
             mol.print_symm_info()
             Z_molecules[z]["MOLS"][i] = standardize_Molecule(
                 mol, temp_fname, args["symmetry_tolerance"]
@@ -438,7 +456,7 @@ def main():
     ###############
     manager = Manager()
     # shared_dict_structure = manager.dict()
-    counter = manager.Value('i', 0)
+    counter = manager.Value('i', n_completed)
     lock = Lock()
     processes = []
     # Make and run the process to verify duplicates
@@ -494,7 +512,7 @@ def main():
             arg_dict["Z_val"] = z_val
             arg_dict["V_dist"] = Z_molecules[z_val]["V_dist"]
             full_mols = Z_molecules[z_val]["MOLS"]
-            print(f"\tpicking perm for sg={sg_ind} from stratified options.")
+            print(f"\tPicking perm for sg={sg_ind} from stratified options.")
             new_perm = pick_option(full_options[sg_ind])
             perm = convert_new_SA_to_old(new_perm, SpaceGroups[sg_ind], placement_table, full_mols)
             perm = [-1, perm]  # modification as now expects [dof, perm]
@@ -525,7 +543,6 @@ def main():
     # results = []
     for process in processes:
         process.join()
-        # results.append(queue.get())
 
     stop_event.set()
     checker.join()

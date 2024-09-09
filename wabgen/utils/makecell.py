@@ -109,125 +109,145 @@ def get_R_matrix(sg, mol, site, rot_ind, mol_rot_dict, theta =None):
 
 
 def add_molecule(cell, mols, ml, sg, Rot_dicts, add_centre, frac_pos=None, theta=None):
-   """adds the molecule to the specified site in the specified orientation
-   sets the centre coords of the mol and adds the cart offset to each atom"""
-   mol_ind = ml[0];  mol = mols[mol_ind]
-   site_ind = ml[1]
-   rot_ind = ml[2]
-   tag = ml[3]
+    """
+    Add the molecule to the specified site in the specified orientation.
 
-   """
-   print(sg.name, sg.number)
-   for n, s in enumerate(sg.sites):
-      print(n, s.letter)
-   print("mol_ind is", mol_ind)
-   print("site_ind is", site_ind)
-   print("rot_ind is", rot_ind)
-   """
-   #1. retrieve the site and update the cartesian operators of the site
-   site = sg.sites[site_ind]
-   site.update_Cops(cell)
+    Sets the centre coords of the mol and adds the cart offset to each atom.
+    """
+    mol_ind = ml[0]
+    mol = mols[mol_ind]
+    site_ind = ml[1]
+    rot_ind = ml[2]
+    tag = ml[3]
 
-   #3. find the operators needed to replicate mol around the cell
-   mult = site.mult
-   ops = [wabgen.core.Operator(0, np.identity(3), (0,0,0))]
-   rsfp, vlist = site.randomised_fp()
-   if frac_pos is not None:
-      rsfp = frac_pos
+    """
+    print(sg.name, sg.number)
+    for n, s in enumerate(sg.sites):
+       print(n, s.letter)
+    print("mol_ind is", mol_ind)
+    print("site_ind is", site_ind)
+    print("rot_ind is", rot_ind)
+    """
 
-   #override if manually specified
-   sites = [rsfp]
+    # 1. retrieve the site and update the cartesian operators of the site
+    site = sg.sites[site_ind]
+    site.update_Cops(cell)
 
-   for op in sg.operators:
-      new_site = wabgen.core.apply_op(op, rsfp)
-      add = True
-      for s in sites:
-         if np.allclose(s, new_site):
-            add = False
+    # 3. find the operators needed to replicate mol around the cell
+    mult = site.mult
+    ops = [wabgen.core.Operator(0, np.identity(3), (0, 0, 0))]
+    rsfp, vlist = site.randomised_fp()
+    if frac_pos is not None:
+        rsfp = frac_pos
+
+    # override if manually specified
+    sites = [rsfp]
+
+    for op in sg.operators:
+        new_site = wabgen.core.apply_op(op, rsfp)
+        add = True
+        for s in sites:
+            if np.allclose(s, new_site):
+                add = False
+                break
+        if add:
+            sites.append(new_site)
+            ops.append(op)
+
+        if len(ops) == mult:
             break
-      if add:
-         sites.append(new_site)
-         ops.append(op)
 
-      if len(ops) == mult:
-         break
+    # 4a. if atoms add them now
+    if mol.Otype == "Atom":
+        for i, s in enumerate(sites):
+            cell.add_atom(label=mol.species[0], fracCoords=s, tag=tag, molName=mol.name, key=i)
+            cell.atoms[-1].set_repeat_op(ops[i])
 
-   #4a. if atoms add them now
-   if mol.Otype == "Atom":
-      for i,s in enumerate(sites):
-         cell.add_atom(label = mol.species[0], fracCoords=s, tag = tag, molName=mol.name, key=i)
-         cell.atoms[-1].set_repeat_op(ops[i])
+        details = {
+            "site": site,
+            "fp": rsfp,
+            "vlist": vlist,
+            "repeater_ops": ops,
+            "species": mol.species,
+            "mc_frac": [rsfp],
+            "centers": sites,
+            "rmax": mol.rmax
+        }
+        return cell, details
 
-      details = {"site":site, "fp": rsfp,"vlist":vlist, "repeater_ops":ops, "species": mol.species, "mc_frac":[rsfp], "centers":sites, "rmax":mol.rmax}
-      return cell, details
+    # 2. get the orientation matrix to apply to the molecule
+    # mc_rot contains the offsets of all the atomic coordinates relative to the moleculs centre
+    # print("Rot_dicts are", Rot_dicts.keys())
+    if mol.std:
+        R, Mopt = get_R_matrix(sg, mol, site, rot_ind, Rot_dicts[mol.name], theta=theta)
+    else:
+        # TODO make this more general for now only works for p1
+        assert mol.point_group_sch == "C1"
+        R = random_rotation()
+        Mopt = None
 
-   #2. get the orientation matrix to apply to the molecule
-   #mc_rot contains the offsets of all the atomic coordinates relative to the moleculs centre
-   #print("Rot_dicts are", Rot_dicts.keys())
-   if mol.std:
-      R, Mopt = get_R_matrix(sg, mol, site, rot_ind, Rot_dicts[mol.name], theta=theta)
-   else:
-      #TODO make this more general for now only works for p1
-      assert mol.point_group_sch == "C1"
-      R  = random_rotation()
-      Mopt = None
+    mc_rot = np.transpose(np.dot(R, np.transpose(mol.coords)))
+    mc_frac = np.transpose(cell.cart_to_frac(np.transpose(mc_rot)))
 
-   mc_rot = np.transpose(np.dot(R, np.transpose(mol.coords)))
-   mc_frac = np.transpose(cell.cart_to_frac(np.transpose(mc_rot)))
+    # 4. loop over list of operators adding symmetry equivalent molecules
+    mc_fo = [x + rsfp for x in mc_frac]
+    for j, op in enumerate(ops):
+        for i in range(0, len(mc_fo)):
+            # mc = apply_op(op, mc_fo[i])     switched to no wrapping of fractional coordinates
+            mc = np.dot(op.matrix, mc_fo[i]) + op.t
+            cell.add_atom(label=mol.species[i], fracCoords = [0,0,0], tag=tag, molName=mol.name, key=j, Mopt=Mopt)
+            cell.atoms[-1].set_position(fracCoords = mc, modulo = False)
+            cell.atoms[-1].set_repeat_op(op)
+        # if merges are needed add a U atom at the centre of each cell
+        if add_centre:
+            cell.add_atom(label="U", fracCoords=[0, 0, 0], tag=tag, molName=mol.name, key=j, Mopt=Mopt)
+            cell.atoms[-1].set_position(fracCoords = np.dot(op.matrix, rsfp)+op.t, modulo=False)
+            cell.atoms[-1].set_repeat_op(op)
 
+        details = {
+            "site": site,
+            "fp": rsfp,
+            "repeater_ops": ops,
+            "vlist": vlist,
+            "mc_frac": mc_fo,
+            "species": mol.species,
+            "centers": sites,
+            "rmax": mol.rmax
+        }
 
-   #4. loop over list of operators adding symmetry equivalent molecules
-   mc_fo = [x + rsfp for x in mc_frac]
-   for j,op in enumerate(ops):
-      for i in range(0,len(mc_fo)):
-         #mc = apply_op(op, mc_fo[i])     switched to no wrapping of fractional coordinates
-         mc = np.dot(op.matrix, mc_fo[i]) + op.t
-         cell.add_atom(label=mol.species[i], fracCoords = [0,0,0], tag=tag, molName=mol.name, key=j, Mopt=Mopt)
-         cell.atoms[-1].set_position(fracCoords = mc, modulo = False)
-         cell.atoms[-1].set_repeat_op(op)
-      #if merges are needed add a U atom at the centre of each cell
-      if add_centre:
-         cell.add_atom(label = "U", fracCoords = [0,0,0], tag=tag, molName = mol.name, key =j, Mopt=Mopt)
-         cell.atoms[-1].set_position(fracCoords = np.dot(op.matrix, rsfp)+op.t, modulo=False)
-         cell.atoms[-1].set_repeat_op(op)
-      details = {"site":site, "fp":rsfp, "repeater_ops":ops,"vlist":vlist, "mc_frac":mc_fo, "species":mol.species, "centers":sites, "rmax":mol.rmax}
-
-   return cell, details
-
-
-def make_cell(mols, sg_ind, perm, V_dist, cell_abc, Rot_dicts, add_centre, ntries = None, min_seps=None):
-   """makes a cell from the perm and info that has been parsed"""
-   #1. make the unit cell itself. Random if not explicity specified. Enforce Symmetry.
-   cell = gen_rand_cell(cell_abc)
-   sg = wabgen.core.SG(symm.retrieve_symmetry_group(sg_ind, reduce_to_prim=True),cell=cell)
-   if len(cell_abc) == 0:
-      cell = scale_cell(cell, V_dist)
-   cell.sg_num = sg.number
-
-   print("cell is", cell)
-
-   all_details = []
-   #2. split the permutation into symmetry equivalent molecules to be added
-   mol_list = perm2mol_list(perm)
-
-   #printing
-   if False:
-      for mol in mols:
-         print(mol.name, mol.Otype, mol.number)
-      print("perm is")
-      pp.pprint(perm)
-
-      print("mol_list is")
-      pp.pprint(mol_list)
+    return cell, details
 
 
-   #3. loop over molecules to be added adding them one by one
-   for h, ml in enumerate(mol_list):
-      cell, details = add_molecule(cell, mols, ml, sg, Rot_dicts, add_centre)
-      all_details.append(details)
+def make_cell(mols, sg_ind, perm, V_dist, cell_abc, Rot_dicts, add_centre, ntries=None, min_seps=None):
+    """Make a cell from the perm and info that has been parsed."""
+    # 1. make the unit cell itself. Random if not explicity specified. Enforce Symmetry.
+    cell = gen_rand_cell(cell_abc)
+    sg = wabgen.core.SG(symm.retrieve_symmetry_group(sg_ind, reduce_to_prim=True), cell=cell)
+    if len(cell_abc) == 0:
+        cell = scale_cell(cell, V_dist)
+    cell.sg_num = sg.number
+    print("cell is", cell)
 
+    all_details = []
+    # 2. split the permutation into symmetry equivalent molecules to be added.
+    mol_list = perm2mol_list(perm)
 
-   return all_details, cell
+    # printing
+    if False:
+        for mol in mols:
+            print(mol.name, mol.Otype, mol.number)
+        print("perm is")
+        pp.pprint(perm)
+
+        print("mol_list is")
+        pp.pprint(mol_list)
+
+    # 3. loop over molecules to be added adding them one by one
+    for h, ml in enumerate(mol_list):
+        cell, details = add_molecule(cell, mols, ml, sg, Rot_dicts, add_centre)
+        all_details.append(details)
+
+    return all_details, cell
 
 
 def cell2conv(cell):

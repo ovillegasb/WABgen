@@ -1,4 +1,8 @@
 
+# Some extra folders
+wabgen/data/*
+!wabgen/data/.gitkeep
+
 # Environments
 .venv
 .test*

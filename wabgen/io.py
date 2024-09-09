@@ -11,7 +11,7 @@ from wabgen.core import Molecule
 directory = os.path.dirname(__file__)
 
 
-def prepare_output_directory(directory_path):
+def prepare_output_directory(directory_path, not_reset=False):
     """
     Verify if the output directory exists, if not, creates it.
 
@@ -21,22 +21,30 @@ def prepare_output_directory(directory_path):
     -----
         directory_path (str): The path to the output directory.
     """
+    removed = True
     if not os.path.exists(directory_path):
         # Create the directory if it does not exist
         os.makedirs(directory_path)
         print(f"Directory created: {directory_path}")
     else:
-        # Directory exists, remove all files inside it
-        for filename in os.listdir(directory_path):
-            file_path = os.path.join(directory_path, filename)
-            try:
-                if os.path.isfile(file_path) or os.path.islink(file_path):
-                    os.unlink(file_path)
-                elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path)
-            except Exception as e:
-                print(f'Failed to delete {file_path}. Reason: {e}')
-        print(f"All files deleted in the directory: {directory_path}")
+        if not not_reset:
+            # Directory exists, remove all files inside it
+            for filename in os.listdir(directory_path):
+                file_path = os.path.join(directory_path, filename)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                except Exception as e:
+                    print(f'Failed to delete {file_path}. Reason: {e}')
+            print(f"All files deleted in the directory: {directory_path}")
+
+        else:
+            print("Generation will not be restarted")
+            removed = False
+
+    return removed
 
 
 def str_to_func(s):
@@ -71,8 +79,6 @@ def parse_file(fname, st, template=False):
 
    out = general_castep_parse(fname, ignoreComments=False)
 
-   # print(out)
-
    # setup the groups/ligands
    groups = set()
    for line in out["positions_abs"]:
@@ -102,6 +108,7 @@ def parse_file(fname, st, template=False):
 
         elif len(line) == 2:
            unit_formular = list(range(line[0], line[-1] + 1))
+   # print("unit_formular:", unit_formular)
 
    Z_molecules = {z: {"MOLS": [], "V_dist": None} for z in unit_formular}
 
@@ -144,30 +151,25 @@ def parse_file(fname, st, template=False):
       if "pre_made" in line[1]:
          p_mols.append(line)
       elif not line[1] in groups:
-         # print(line)
+         assert len(line) == 3, "The insert line is not well defined, three parameters should be\
+used: N name/symbol groups/atoms\ndetected: {}".format(" ".join([str(a) for a in line]))
          number = line[0]
          atom_sym = line[1]
-         # print(number)
          mols.append(Molecule([atom_sym], [0, 0, 0], number=number, Otype="Atom"))
          # Probando la nueva estructura
          for z in Z_molecules:
-           # print(number, z, number*z)
            Z_molecules[z]["MOLS"].append(Molecule([atom_sym], [0, 0, 0], number=z*number, Otype="Atom"))
-
-   # print("Molecules:\n", mols)
 
    # remove 0 species
    if not template:
       mols = [mol for mol in mols if mol.number > 0]
 
    # parse in the target volume as a normal distribution
+   V_dist = ""
    if "volume_distribution" in out:
       split = out["volume_distribution"][0]
-      V_dist = ""
       for x in split:
          V_dist += str(x) + " "
-
-   # print(V_dist)
 
    # parse in the target volume as a normal distribution
    if "density" in out:
