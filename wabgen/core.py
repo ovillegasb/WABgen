@@ -12,6 +12,7 @@ import sys
 import time
 import multiprocessing
 import numpy as np
+from ase import Atoms
 from func_timeout import FunctionTimedOut
 from pymatgen.symmetry.analyzer import PointGroupAnalyzer as PGA
 from pymatgen.symmetry.groups import PointGroup as PymatPointGroup
@@ -20,14 +21,13 @@ from pymatgen.io.ase import AseAtomsAdaptor
 from pymatgen.core import Structure
 from wabgen.utils.data import get_atomic_data
 from wabgen.utils.align import parallel, calc_R1, mol2site2
-from wabgen.utils.cell import UnitCell
+from wabgen.utils.cell import UnitCell, check_all_minseps
 from wabgen.utils.data import read_db, write_db
-from wabgen.utils.group import generate_group
+from wabgen.utils.group import generate_group, order_of_R
 from wabgen.utils import symm
 from wabgen.utils.makecell import make_cell
 from wabgen.utils.radialpp_bfgs2 import push_apart as flex_push_apart
 from wabgen.utils.filter import test_mof_structure
-from wabgen.utils.castep import general_castep_parse
 import wabgen.io
 
 
@@ -88,6 +88,77 @@ metals = [
    'Fr', 'Ra', 'Ac', 'Th', 'Pa', 'U', 'Np', 'Pu', 'Am', 'Cm', 'Bk', 'Cf', 'Es', 'Fm', 'Md', 'No', 'Lr',
    'Rf', 'Db', 'Sg', 'Bh', 'Hs', 'Mt', 'Ds', 'Rg', 'Cn', 'Nh', 'Fl', 'Mc', 'Lv', 'Ts', 'Og'
 ]
+
+
+class GEOM_constraint:
+    """Class representing a point group selected to constrain a site."""
+
+    def __init__(self, d=1.0):
+        self.d = d
+
+    @property
+    def skeleton_X(self):
+        d = self.d
+        return {
+         "D*h": Atoms(
+             "XX",
+             positions=[(-d/8, 0, 0), (d/8, 0, 0)]
+         ),
+         "D4h": Atoms(
+             "XXXX",
+             positions=[(d, 0, 0), (0, d, 0), (-d, 0, 0), (0, -d, 0)]
+         ),
+         "D2h": Atoms(
+             "XXXX",
+             positions=[
+                 (d*0.86602540, d*-0.5, 0),
+                 (d*0.86602540, d*0.5, 0),
+                 (d*-0.86602540, d*-0.5, 0),
+                 (d*-0.86602540, d*0.5, 0)
+             ]
+         ),
+         "D3h": Atoms(
+             "XXX",
+             positions=[
+                 (0, d, 0),
+                 (0, -d*np.sin(np.deg2rad(30.0)), -d*np.cos(np.deg2rad(30.0))),
+                 (0, -d*np.sin(np.deg2rad(30.0)), d*np.cos(np.deg2rad(30.0)))
+             ]
+         ),
+         "Td": Atoms(
+             "HHHH",
+             positions=[
+                 (0, 0, d),
+                 (0, d*-0.94280904, d*-0.33333333),
+                 (d*0.81649658, d*0.47140452, d*-0.33333333),
+                 (d*-0.81649658, d*0.47140452, d*-0.33333333)
+             ]
+         ),
+         "D2d***": Atoms(#MODIFICAR TODO
+             "XXXX",
+             positions=[
+                 (d*-0.17022212, d*0.09827779, d*0.98049269),
+                 (d*0.17022212, d*-0.89165810, d*-0.41948808),
+                 (d*0.85730963, d*0.29841237, d*-0.41948808),
+                 (d*-0.85730963, d*0.49496795, d*-0.14151652),
+             ]
+         ),
+         "Oh": Atoms(
+             "XXXXXX",
+             positions=[
+                 (0, 0, d),
+                 (0, d, 0),
+                 (d, 0, 0),
+                 (0, 0, -d),
+                 (0, -d, 0),
+                 (-d, 0, 0)
+             ]
+         )
+        }
+
+    def set_point_group(self, pg):
+
+        return self.skeleton_X[pg]
 
 
 def get_cpu_num():
@@ -188,6 +259,68 @@ def generate_structure_test():
     return random.choice(STRUCT)
 
 
+def check_min_seps(cell, min_seps=None, tol=0, modify_tags=False):
+    """Check min separations, default of 1 angstrom."""
+    print("check_min_seps")
+    if modify_tags:
+        for i, at in enumerate(cell.atoms):
+            cell.atoms[i].tag = i
+
+    if min_seps is None:
+        els = list(set([at.label for at in cell.atoms]))
+        D = {}
+        for e1 in els:
+            D[e1] = {}
+            for e2 in els:
+                D[e1][e2] = 1  # defaults 1 angs.
+    # parsed minseps
+    else:
+        els = min_seps[0]
+        D = min_seps[1]
+
+    print("min_seps are", D)
+    # Check atoms
+    for i, at1 in enumerate(cell.atoms):
+        if at1.label == "U":
+            continue
+        elif at1.label == "X":
+            continue
+        print("i:", i, "atom:", at1, "label:", at1.label)
+
+        for j, at2 in enumerate(cell.atoms[i:]):
+            if at2.label == "U":
+                continue
+            elif at1.label == "X":
+                continue
+
+            if at1.tag == "ignore" and at2.tag == "ignore":
+                continue
+
+            print("j:", j, "atom:", at2, "label:", at2.label)
+            if (at1.tag == at2.tag and at1.key == at2.key)  or j == 0 :
+                # if i == j:
+                # don't use the shift vector of [0,0,0]
+                # check second closest image
+                rs = cell.ed_same_mol(at1.fracCoords, at2.fracCoords, all_pos=True)
+                rs = sorted(rs, key=lambda x: x[0])
+                d = rs[1][0]
+            else:
+                d = cell.ed2(at1.fracCoords, at2.fracCoords)
+                # d = cell.euclidian_distance(at1.fracCoords,at2.fracCoords)
+
+            if d < D[at1.label][at2.label]-tol:
+                print("failed minseps with", at1.label, at2.label, d)
+                print(at1.key, at2.key)
+                """
+                print(cell.lengths, 180/np.pi*np.array(cell.angles))
+                print(cell.cartBasis)
+                """
+                return False
+
+        print("passed minseps")
+    return True
+
+
 def make_test(dof_perm, fname, arg_dict, lock=None, counter=0, result_queue=None):
     """Test main boucle."""
     print(60 * "#")
@@ -223,21 +356,21 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
     print(60 * "#")
     print_blue("Running main function from WAMgen - building structure ...")
     # 0. conver the arguments to a useable form
-    dof = dof_perm[0]
+    # dof = dof_perm[0]
     perm = dof_perm[1]
 
     n_tries = arg_dict["n_tries"]
     sg_ind = arg_dict["sg_ind"]
     target_atom_nums = arg_dict["target_atom_nums"]
-    form = arg_dict["form"]
+    # form = arg_dict["form"]
     V_dist = arg_dict["V_dist"]
     cell_abc = arg_dict["cell_abc"]
     mols = arg_dict["mols"]
     min_seps = arg_dict["min_seps"]
-    gulp_ps = arg_dict["gps"]
+    # gulp_ps = arg_dict["gps"]
     pressure = arg_dict["pressure"]
     noise = arg_dict["minsep_noise"]
-    aenet_relax = arg_dict["aenet_relax"]
+    # aenet_relax = arg_dict["aenet_relax"]
     Rot_dicts = arg_dict["Rot_dicts"]
     Z_val = arg_dict["Z_val"]
     push_apart = arg_dict["push_apart"]
@@ -250,7 +383,7 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
     log_memory_usage(f"{cpu} start")
 
     sg = arg_dict["sg"]
-    print_blue(f"Spacegroup: {sg.name}")
+    # print_blue(f"Spacegroup: {sg.name}")
     # print("sg_ind=", sg_ind, "perm=", perm)
 
     # check if only have atoms
@@ -268,6 +401,7 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
             dic[el1][el2] += random.uniform(-noise, noise)
             dic[el2][el1] = dic[el1][el2]
     min_seps[1] = dic
+    # print("min_seps:", min_seps)
 
     # 1. make n_tries attempt to make the permutation
     n_SG = 2    # fail count for making a supergroup
@@ -275,6 +409,7 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
     n_vol = 15  # total times to fail because volume is too large
     n_tries = arg_dict["n_tries"]
     accept = False
+    check_distance = False
     N_supercells = 0
     N_supergroup = 0
     vols = []
@@ -288,14 +423,36 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
     while not accept and n_try < n_tries and len(vols) < n_vol:
         n_try += 1
 
-        # if not push_apart:
-        #     print("NOT PUSHING APART")
-        #     #TODO what doesn't work hore?
-        #     #NOTE sometimes this doesn't seem to work...
-        #     print("V_dist is", V_dist)
-        #     print("cell_abc is", cell_abc)
+        if not push_apart:
+            print("NOT PUSHING APART")
+            #TODO what doesn't work hore?
+            #NOTE sometimes this doesn't seem to work...
+            # print("V_dist is", V_dist)
+            # print("cell_abc is", cell_abc)
+            all_details, cell = make_cell(
+               mols,
+               sg_ind,
+               perm,
+               V_dist,
+               cell_abc,
+               Rot_dicts,
+               add_centre
+            )
+            # print("cell:", cell)
+            # print("cell:", dir(cell))
+            # print("cell atoms:", cell.atoms)
+            # print(all_details)
+            if only_atoms:
+                accept = check_all_minseps(cell, min_seps=arg_dict["min_seps"])
+            else:
+                accept = check_min_seps(cell, arg_dict["min_seps"])
 
-        if push_apart == "flexible":
+            # print("min sep accepted:", accept)
+            if not accept:
+                continue
+            H = 0
+
+        elif push_apart == "flexible":
             overlap_accept = False
             noverlap = 0
             overlap_max = 30
@@ -342,17 +499,6 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
             cell.sg_num = sg.number
             H = cell.vol/len(cell.atoms)
 
-        # check to see if made a supercell
-        n_orig = len(cell.atoms)
-        cell = symm.niggli_reduce(cell, to_prim=True)
-        cell.sg_num = sg_ind
-        n_final = len(cell.atoms)
-        H *= n_final/n_orig
-        if arg_dict["no_supercells"] and n_final < n_orig:
-            N_supercells += 1
-            accept = False
-            continue
-
         # if here then have a good cell and write it out to file
         # create a file name
         f_name = fname + "_" + str(cell.sg_num)
@@ -364,9 +510,10 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
         print_blue("system name: {}".format(f_name.split("/")[-1]))
 
         # Extract ASE atoms
-        ase_struct = cell.get_ase_struct()
+        #>>>>>>ase_struct = cell.get_ase_struct()
 
-        if not only_atoms:
+        if not only_atoms and check_distance:
+            ase_struct = cell.get_ase_struct()
             # Testing filter distances
             print("Checking distances...")
             metal_center = set()
@@ -392,20 +539,20 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
                 accept = False
                 continue
 
-        # Testing duplicates
-        print("Checking duplicates...")
-        pymatgen_struct = AseAtomsAdaptor.get_structure(ase_struct)
-        response_q = multiprocessing.Manager().Queue()
-        N_replicates_q = multiprocessing.Manager().Queue()
-        result_queue.put((cpu, pymatgen_struct, response_q, N_replicates_q))
-        is_duplicate = response_q.get()
-        N_duplicates = N_replicates_q.get()
-        if is_duplicate:
-            print(f"\033[95mStructure duplicated - N={N_duplicates}\033[0m")
-            accept = False
-            continue
-        else:
-            print(f"\033[95mStructure generated is not a duplicate - N={N_duplicates}\033[0m")
+        #>>>>>>># Testing duplicates
+        #>>>>>>>print("Checking duplicates...")
+        #>>>>>>>pymatgen_struct = AseAtomsAdaptor.get_structure(ase_struct)
+        #>>>>>>>response_q = multiprocessing.Manager().Queue()
+        #>>>>>>>N_replicates_q = multiprocessing.Manager().Queue()
+        #>>>>>>>result_queue.put((cpu, pymatgen_struct, response_q, N_replicates_q))
+        #>>>>>>>is_duplicate = response_q.get()
+        #>>>>>>>N_duplicates = N_replicates_q.get()
+        #>>>>>>>if is_duplicate:
+        #>>>>>>>    print(f"\033[95mStructure duplicated - N={N_duplicates}\033[0m")
+        #>>>>>>>    accept = False
+        #>>>>>>>    continue
+        #>>>>>>>else:
+        #>>>>>>>    print(f"\033[95mStructure generated is not a duplicate - N={N_duplicates}\033[0m")
 
         # H should always be define, often 0
         print_blue(f"writing res with P={P} and E={H}")
@@ -444,20 +591,6 @@ def structure_generator(dof_perm, fname, arg_dict, lock=None, counter=0, result_
 
     print("WABgen has failed to find convergence for this structure")
     sys.exit(1)
-
-
-def pick_option(sg_opts):
-    """"pick an option from {sg_ind: {total_sites: [options]}}
-    weight to favour using fewer sites. P = 1/2 for fewest sites, P = 1/4 for next fewest etc.
-    Could argue this is not aggressive enough...
-    could also argue that there will be fewer options for lower numbers of sites and this is already exponential!"""
-    n_sites = sorted(list(sg_opts.keys()))
-
-    ws = [1/(2**i) for i in range(len(n_sites))]
-    ps = [w/sum(ws) for w in ws]
-    n = np.random.choice(n_sites, p=ps)
-    opt = np.random.choice(sg_opts[n])
-    return opt
 
 
 def tol_sort(fops, tol, ind=0):
@@ -514,9 +647,10 @@ def sort_matrices(ops, tol=10**-3):
 
 def order_of_op(R):
     """Return the order of a rotation element."""
+    # print("R is", R)
     n = 0
     same = False
-    while same == False:
+    while not same:
         n += 1
         Rn = np.linalg.matrix_power(R, n)
         Rnf = Rn.flatten()
@@ -536,13 +670,14 @@ def order_of_op(R):
                 return n
             # print("order of element has gone wrong")
             exit()
+
     return n
 
 
 def add_template_molecule(temp_fname, Mol):
     """Add this molcule to the template_molcules_file."""
     # 1. read in the template file
-    out = general_castep_parse(temp_fname, ignoreComments=False)
+    out = wabgen.io.general_castep_parse(temp_fname, ignoreComments=False)
     # print("out is", out)
 
     # 2. add the molecule to the positions_abs block
@@ -637,14 +772,13 @@ class Operator:
          self.set_eig()
          self.index = index
 
-
    def set_op_symbol(self):
-      #determines the operators symbol from its order and determinent
-      #all + for rotations, - for roto-inversions
+      # determines the operators symbol from its order and determinent
+      # all + for rotations, - for roto-inversions
       M = self.matrix
 
       det = np.linalg.det(M)
-      Inv = np.array([[-1,0,0],[0,-1,0],[0,0,-1]])
+      Inv = np.array([[-1, 0, 0], [0, -1, 0], [0, 0, -1]])
       if det < 0:
          M = np.dot(M, Inv)
       return int(round(det * order_of_op(M)))
@@ -654,7 +788,7 @@ class Operator:
       #if the element is 1 or -1 return [1,0,0]
       if self.op_symbol == 1 or self.op_symbol == -1:
 
-         self.eig = np.array([1,0,0])
+         self.eig = np.array([1, 0, 0])
 
       if self.op_symbol < 0:
          lamb = -1
@@ -662,9 +796,9 @@ class Operator:
          lamb = 1
 
       R = self.matrix
-      l,M = np.linalg.eig(R)
+      l, M = np.linalg.eig(R)
       tol = 0.0001
-      for i,l2 in enumerate(l):
+      for i, l2 in enumerate(l):
          if lamb - tol <= l2 <= lamb + tol:
             eig = np.real(M.T[i])
       #take the real part to prevent potential problems later
@@ -692,11 +826,17 @@ def wrap_coords(fp, tol = 10**-6):
 
 class Molecule:
    """NOT the pymatgen class, modified to be more useful"""
-   def __init__(self, species, coords, number=1, Otype="Mol", name=None, st=1e-03, std=True):
+   def __init__(self, species, coords, number=1, Otype="Mol", name=None, st=1e-03, std=True, constraint=None):
+      # how many of the Molecule there are
+      self.number = number
       self.Otype = Otype
+
+      # contraint
+      self.constraint = constraint
+
       if Otype=="Mol":
          self.std = std
-         self.name=name
+         self.name = name
          self.species = species
          self.coords = coords
          #self.coords = [x for x in coords]
@@ -725,7 +865,6 @@ class Molecule:
             pp.pprint(self.gfp)
             pp.pprint(gfp2)
          """
-         self.number = number    #how many of the Molecule there are
          self.eig_dict = Molecule.set_eig_dict(self, self.C_operators)
 
 
@@ -734,7 +873,6 @@ class Molecule:
       elif Otype=="Atom":
          self.species = species
          self.coords = [0,0,0]
-         self.number = number
          self.name = species[0]
          self.rmax = 0.1
 
@@ -791,9 +929,9 @@ class Molecule:
 
    def CoM_shift(self):
       at_info = get_atomic_data()
-      RM = np.array([0.0,0.0,0.0])
+      RM = np.array([0.0, 0.0, 0.0])
       M = 0
-      for i,lab in enumerate(self.species):
+      for i, lab in enumerate(self.species):
          m = at_info[lab]["Mr"]
          r = np.array(self.coords[i])
          RM += m*r
@@ -801,7 +939,7 @@ class Molecule:
       R = RM/M
 
       #now shift all of the positions by R
-      for i,x in enumerate(self.coords):
+      for i, x in enumerate(self.coords):
          self.coords[i] = np.array(x)-R
       self.cart_CoM = R
 
@@ -852,21 +990,20 @@ class Molecule:
 
 
    def print_symm_info(self):
-      """print symmetry infomation"""
-
+      """Print symmetry infomation."""
       if self.Otype == "Mol":
-         print("\nsymmetry info is")
+         print("\nsymmetry info is:")
          print("name is", self.name)
-         if "point_group_sch" in self.__dict__.keys():
-            print("sch symbol is ", self.point_group_sch)
+         # if "point_group_sch" in self.__dict__.keys():
+         print("sch symbol is ", self.point_group_sch)
          print("fingerprints are", self.fp, self.gfp)
          print("HM symbol is", self.symbol.HM)
          print("mol.symbol.ind", self.symbol.ind)
 
-   def get_ops(self,st):
+   def get_ops(self, st):
       #set operations to an instance of the Operators clas
       pmgmol = IMolecule(self.species,self.coords)
-      pmgPG = PGA(pmgmol,tolerance=st)
+      pmgPG = PGA(pmgmol, tolerance=st)
       self.point_group_sch = re.sub(r"\*", "_", pmgPG.sch_symbol)
       #print(self.point_group_sch)
 
@@ -895,7 +1032,7 @@ class Molecule:
          Ops.append(Operator(i, op))
       return Ops
 
-   def set_fp(self,ops):
+   def set_fp(self, ops):
       #written like this so can pass either type of ops
       fp = [x.op_symbol for x in ops]
       fp = np.sort(fp)
@@ -909,7 +1046,7 @@ class Molecule:
       """use differnet grouping method to check they give the same answer"""
       gfp = dict()
       for op in ops:
-         gfp[op.op_symbol]=[]
+         gfp[op.op_symbol] = []
 
       Rs = [x.matrix for x in ops if x.op_symbol > 0]
       if Rnorm is not None:
@@ -1052,7 +1189,7 @@ class Site:
          self.order = len(self.operators)
          self.gfp = Molecule.set_gfp(self,self.C_operators)
          self.unique_eigs = Molecule.set_unique_eigs(self,self.C_operators)
-         self.fp = Molecule.set_fp(self,self.C_operators)
+         self.fp = Molecule.set_fp(self, self.C_operators)
          self.symbol = Symbol(self.fp)
          self.Otype = "Mol"
          #NOTE: need to sort the fractional eigs then convert to cart-eigs
@@ -1134,14 +1271,14 @@ class Site:
       return rand_site_fp, None
 
    def update_Cops(self, cell):
-      #after the cell is fixed update the Cartesian operators
+      # after the cell is fixed update the Cartesian operators
       C_ops = []
       for op in self.operators:
          matrix = op.matrix
          Mc = np.dot(cell.cartMat, matrix)
          MC = np.dot(Mc, cell.fracMat)
-         tc = np.dot(cell.cartMat,op.t)
-         C_ops.append(Operator(op.index,MC,t=tc))
+         tc = np.dot(cell.cartMat, op.t)
+         C_ops.append(Operator(op.index, MC,t=tc))
       self.C_operators = C_ops
 
    def set_operators(self,operators,C_operators):
@@ -1212,22 +1349,6 @@ class Site:
       self.fp = Molecule.set_fp(self,self.operators)
 
 
-def get_rand_R2(u, gam=None):
-   u = u/np.linalg.norm(u)
-   if gam is None:
-      gam = random.uniform(-np.pi,np.pi)
-   cos_gam = np.cos(gam)
-   sin_gam = np.sin(gam)
-
-   Id = np.identity(3)
-   #wiki formula for R2
-   ux = np.array([[0,-u[2],u[1]],[u[2],0,-u[0]],[-u[1],u[0],0]])
-   ut = np.tensordot(u,u,axes=0)
-   R2 = cos_gam*Id + sin_gam*ux + (1-cos_gam)*ut
-   #print("only one alignemnet, randomised over the free angle")
-   return R2
-
-
 class Perm:
    def __init__(self, otr, M=np.identity(3)):
       self.number =  otr["No"]
@@ -1258,84 +1379,77 @@ class Perm:
 
 
 class SG:
-   """
-   similar class to Jw's for Spacegroups.
-   """
-   #space group class to be initialised from one of Jamies
-   #space group objects
-   def __init__(self,JWSG,cell=None):
-      self.number = JWSG["number"]
-      self.system = JWSG["system"]
-      self.name = JWSG["name"]
-      self.M = JWSG["M"]   #jpd47 added this, used for reduction to primitive
-      #read in thr passed random cell and enforce symmetry
-      self.cell = cell
-      if cell is not None:
-         symm.enforce_symmetry(self,self.cell)
-      self.offsets = JWSG["offsets"]
-      SG.set_ops(self,JWSG)
-      SG.set_sites(self,JWSG)
-      SG.read_normaliser(self)
+    """Similar class to Jw's for Spacegroups."""
+    def __init__(self, JWSG, cell=None):
+        """Initialize from one of Jamies space group objects."""
+        self.number = JWSG["number"]
+        self.system = JWSG["system"]
+        self.name = JWSG["name"]
+        self.M = JWSG["M"]   # jpd47 added this, used for reduction to primitive
+        # read in thr passed random cell and enforce symmetry
+        self.cell = cell
+        if cell is not None:
+            symm.enforce_symmetry(self, self.cell)
+        self.offsets = JWSG["offsets"]
+        SG.set_ops(self, JWSG)
+        SG.set_sites(self, JWSG)
+        SG.read_normaliser(self)
 
+    def set_signature_dict(self, sd):
+        self.signature_dict = sd
 
-   def set_signature_dict(self, sd):
-      self.signature_dict = sd
+    def read_normaliser(self):
+        # read in the permutations of wyckoff sites from the affine normaliser
+        if self.number in [229, 230]:
+            self.norm_perms = [[i for i in range(0, len(self.sites))]]
+        else:
+            # read in the affine normaliser from data/norm_number.txt.gz
+            fname = directory+"/data/normalisers/norm_"+str(self.number)+".txt.gz"
+            norm = read_db(fname)
+            self.norm_perms = [x for x in norm["permutations"]]
+            self.wsets = [x for x in norm["wsets"]]
+            # read in ops_table
+            self.perms = []
+            for otr in norm["Op_table"]:
+                self.perms.append(Perm(otr, self.M))
+            # print("self.perms is", self.perms[-1].__dict__, self.perms[-1].op.__dict__)
 
-   def read_normaliser(self):
-      #read in the permutations of wyckoff sites from the affine normaliser
-      if self.number in [229,230]:
-         self.norm_perms = [[i for i in range(0,len(self.sites))]]
-      else:
-         #read in the affine normaliser from data/norm_number.txt.gz
-         fname = directory+"/data/normalisers/norm_"+str(self.number)+".txt.gz"
-         norm = read_db(fname)
-         self.norm_perms = [x for x in norm["permutations"]]
-         self.wsets = [x for x in norm["wsets"]]
+    def set_C_operators(self, JWSG):
+        self.C_operators = []
+        for i, op in enumerate(self.operators):
+            M = np.dot(np.dot(self.cell.cartMat, op.matrix), self.cell.fracMat)
+            t = np.dot(self.cell.cartMat, op.t)
+            self.C_operators.append(Operator(i, M, t))
 
-         #read in ops_table
-         self.perms = []
+    def irational_cell(self, JWSG):
+        # creates a cell with irrational lengths and angles
+        lengths = [2**1.5, 3**1.5, 5**0.75]
+        angles = [np.pi*30,63*2**0.5,49*3**0.5]
+        self.cell = UnitCell(angles=angles, lengths=lengths)
+        symm.enforce_symmetry(self, self.cell)
 
-         for otr in norm["Op_table"]:
-            self.perms.append(Perm(otr, self.M))
-         #print("self.perms is", self.perms[-1].__dict__, self.perms[-1].op.__dict__)
+    def set_ops(self, JWSG):
+        # initalises self.ops to be a list of instances of
+        # the Operators class
+        self.operators = []
+        for i, op in enumerate(JWSG["operators"]):
+            M = op[0]
+            t = op[1]
+            self.operators.append(Operator(i, M, t))
+        if self.cell is None:
+            SG.irational_cell(self, JWSG)
+        SG.set_C_operators(self, JWSG)
+        self.rank = len(self.operators)
 
-   def set_C_operators(self,JWSG):
-      self.C_operators = []
-      for i,op in enumerate(self.operators):
-         M = np.dot(np.dot(self.cell.cartMat,op.matrix),self.cell.fracMat)
-         t = np.dot(self.cell.cartMat,op.t)
-         self.C_operators.append(Operator(i,M,t))
-
-   def irational_cell(self, JWSG):
-      #creates a cell with irrational lengths and angles
-      lengths = [2**1.5, 3**1.5,5**0.75]
-      angles = [np.pi*30,63*2**0.5,49*3**0.5]
-      self.cell = UnitCell(angles=angles,lengths=lengths)
-      symm.enforce_symmetry(self,self.cell)
-
-   def set_ops(self,JWSG):
-      #initalises self.ops to be a list of instances of
-      #the Operators class
-      self.operators = []
-      for i,op in enumerate(JWSG["operators"]):
-         M = op[0]
-         t = op[1]
-         self.operators.append(Operator(i,M,t))
-      if self.cell is None:
-         SG.irational_cell(self,JWSG)
-      SG.set_C_operators(self,JWSG)
-      self.rank = len(self.operators)
-
-   def set_sites(self,JWSG):
-      #set self.sites to be a list of instances of
-      #the Site class
-      self.sites = []
-      N = len(JWSG["wyckoff"])
-
-      for i,site in enumerate(reversed(JWSG["wyckoff"])):
-
-         self.sites.append(Site(i,site,self.operators,self.C_operators,
-         self.offsets,cell=self.cell, Nsites = N))
+    def set_sites(self, JWSG):
+        # set self.sites to be a list of instances of
+        # the Site class
+        self.sites = []
+        N = len(JWSG["wyckoff"])
+        for i, site in enumerate(reversed(JWSG["wyckoff"])):
+            self.sites.append(
+               Site(i, site, self.operators, self.C_operators, self.offsets, cell=self.cell, Nsites=N)
+            )
 
 
 class Symbol:
@@ -1398,56 +1512,53 @@ class Symbol:
 PGref = [Symbol(i) for i in range(1, 33)]
 
 
-def weight_spacegroups(sg_inds, SpaceGroups, filename=None, weighting="ranks"):
-   """various weighting schemes OR simply read from a file"""
-   if filename is None:
-      if weighting == "ICSD":
-         filename = directory + "data/ICSD_spacegroup_frequencies.txt"
-      elif weighting == "CSD":
-         filename = directory + "data/CSD_spacegroup_frequencies.txt"
+def weight_spacegroups(sg_selected, SpaceGroups, filename=None, weighting="ranks"):
+    """Return various weighting schemes OR simply read from a file."""
+    if filename is None:
+        if weighting == "ICSD":
+            filename = directory + "data/ICSD_spacegroup_frequencies.txt"
+        elif weighting == "CSD":
+            filename = directory + "data/CSD_spacegroup_frequencies.txt"
 
-   #get baseline frequencies from somewhere
-   if filename is not None:
-      fs = []
-      with open(filename, "r") as fil:
-         for line in fil:
-            ls = line.split()
-            sg_ind = int(ls[0])
-            f = int(ls[1])
-            if sg_ind in sg_inds:
-               fs.append([sg_ind, f])
+    # get baseline frequencies from somewhere
+    if filename is not None:
+        fs = []
+        with open(filename, "r") as fil:
+            for line in fil:
+                ls = line.split()
+                sg_ind = int(ls[0])
+                f = int(ls[1])
+                if sg_ind in sg_inds:
+                    fs.append([sg_ind, f])
+    elif weighting == "uniform":
+        fs = [[sg_ind, 1] for sg_ind in sg_inds]
+    elif weighting == "ranks":
+        fs = []
+        for i in sg_selected:
+            sg = SpaceGroups[i]
+            fs.append([i, (192.0/sg.rank)**0.5])
 
-   elif weighting == "uniform":
-      fs = [[sg_ind, 1] for sg_ind in sg_inds]
+    # prevent weighted list from being too long if something weird happens
+    fmax = max([x[1] for x in fs])
+    scale = 10000/fmax
+    fs = [[x[0], x[1]*scale] for x in fs]
+    # TODO
+    # The weighted list approach is a horrible way of doing this...
+    # not worth changing it atm, whole code needs a re-write
+    weighted_dict = {}
+    freq_dict = {}
 
-   elif weighting == "ranks":
-      fs = []
-      for i in sg_inds:
-         sg = SpaceGroups[i]
-         fs.append([i, (192.0/sg.rank)**0.5])
+    for row in fs:
+        sg_ind = row[0]
+        f = row[1]
+        if f > 1e-5:
+            f = math.ceil(f)
+        else:
+            f = 0
 
-   #prevent weighted list from being too long if something weird happens
-   fmax = max([x[1] for x in fs])
-   scale = 10000/fmax
-   fs = [[x[0], x[1]*scale] for x in fs]
+        # freq_list = [...[sg_ind, f] ...]
+        freq_dict[sg_ind] = f
+        temp = [sg_ind] * f
+        weighted_dict[sg_ind] = temp
 
-
-   #The weighted list approach is a horrible way of doing this...
-   #not worth changing it atm, whole code needs a re-write
-
-   weighted_list = []
-   freq_list = []
-
-   for row in fs:
-      sg_ind = row[0]
-      f = row[1]
-      if f > 1e-5:
-         f = math.ceil(f)
-      else:
-         f = 0
-      freq_list.append([sg_ind, f])
-      temp = [sg_ind] * f
-      weighted_list += temp
-
-   return weighted_list, freq_list
-
+    return weighted_dict, freq_dict

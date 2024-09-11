@@ -87,3 +87,42 @@ def acton(p, g):
    np = [g[i] for i in p]
    return np
 
+
+def order_of_R(R, tol=0.03):
+   """returns order of rotation element, useful to parse order of group as Nmax"""
+   def is_integer(n, tol):
+      dif = abs(n-round(n))
+      if dif/n < tol:
+         return True
+      else:
+         return False
+   #1. calculate rotation angle and use to determine order
+   trace = np.trace(R)
+   theta = np.arccos(0.5*(trace-1))
+   n = 2*np.pi/theta
+   if is_integer(n, tol):
+      return round(n)
+   else:
+      return None
+
+   """
+   #1b. check multiples of two *pi
+   for m in range(2,10):
+      nm = n*m
+      print(m, nm)
+      if is_integer(nm, tol):
+         return round(nm)
+   """
+   #2. scale then repeat
+   det = np.linalg.det(R)
+   R2 = det**(-1/3)*R
+   trace2 = np.trace(R2)
+   theta2 = np.arccos(0.5*(trace2-1))
+   n2 = 2*np.pi/theta2
+   dif = abs(n2-round(n2))
+   if dif/n2 < tol:
+      return round(n2)
+   else:
+      print("n and n2 are", n, n2)
+      print("trace is", trace)
+      exit()

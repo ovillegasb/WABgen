@@ -5,6 +5,7 @@ import copy
 import math as m
 import numpy as np
 import ase
+from wabgen.utils.symm import niggli_reduce
 
 
 
@@ -23,6 +24,43 @@ def crystal_modulo(position, eps=1e-10):
          elif position[i] == -1.0:
             position[i] += 1.0
       return position
+
+
+def check_all_minseps(cell, min_seps=None):
+   #setup a minimum of 1 AA between atoms
+   if min_seps is None:
+      print("warning using default minseps of 1A between everything")
+      els = list(set([at.label for at in cell.atoms]))
+      D = {}
+      for e1 in els:
+         D[e1] = {}
+         for e2 in els:
+            D[e1][e2] = 1
+   #parsed minseps
+   else:
+      els = min_seps[0]
+      D = min_seps[1]
+
+   #loop over cell
+   cell = niggli_reduce(cell)
+   for i, at1 in enumerate(cell.atoms):
+      l1 = at1.label
+      f1 = at1.fracCoords
+      for j, at2 in enumerate(cell.atoms):
+         l2 = at2.label
+         f2 = at2.fracCoords
+         dif = [x%1 for x in f1-f2]
+         for a in range(-1,2):
+            for b in range(-1,2):
+               for c in range(-1,2):
+                  if j == i and a==0 and b == 0 and c == 0:
+                     continue
+                  fvec = [dif[0]+a, dif[1]+b, dif[2]+c]
+                  cvec = cell.frac_to_cart(fvec)
+                  d = np.linalg.norm(cvec)
+                  if d < D[l1][l2]:
+                     return False
+   return True
 
 
 class UnitCell:

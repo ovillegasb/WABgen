@@ -36,15 +36,15 @@ def convert_gen_opt(gen_opt):
 
 
 def convert_new_SA_to_old(new_SA, sg, PT, mols):
-    #1. get the normaliser permutations
+    # 1. get the normaliser permutations
     norm_perms = sg.norm_perms
     if len(norm_perms) == 0:
-       norm_perms = [[site.index for site in sg.sites]]
+        norm_perms = [[site.index for site in sg.sites]]
 
     SA = defaultdict(lambda: defaultdict(list))
 
-    #zero sites first
-    #same permutation for all zero sites as these may have been symmetry reduced already.
+    # zero sites first
+    # same permutation for all zero sites as these may have been symmetry reduced already.
     perm = random.choice(norm_perms)
     dic = new_SA["zs_al"]
     for mol_ind, site_inds in dic.items():
@@ -58,9 +58,9 @@ def convert_new_SA_to_old(new_SA, sg, PT, mols):
                 NR = 1
             SA[mol_ind][si] += [np.random.randint(low=0, high=NR)]
 
-    #now the other sites
+    # now the other sites
     dic = new_SA["gen_al"]
-    #differnt perm for each molecule ind as independently sym reduced.
+    # differnt perm for each molecule ind as independently sym reduced.
     for mol_ind, site_inds in dic.items():
         mol = mols[mol_ind]
         # print("mol is", mol)
@@ -84,124 +84,123 @@ def default_to_regular(d):
 
 
 def new_site_allocation(sg, mols, PT, zsa, msr={}, srr={}, max_options=1e3, max_extra_sites=200):
-   """take in the dictionary of zero site allocations and find all symmetry
-   distinct ways of finishing each allocation using the remaining sites"
+    """
+    Return a dictionary.
 
-   #TODO also parse max extra sites to single_mol_perms
-   max_extra sites is the maxmimu number of additiona wyckoff sites to use over the minimum number
-   """
+    Take in the dictionary of zero site allocations and find all symmetry distinct ways of
+    finishing each allocation using the remaining sites.
 
-   #sort the keys in zsa by number of molecules to add
-   #multiplicity increases with dimensionality (incorrectly called "rank" in this code)
-   #so having more moleculs left after zero site allocation is desirable from princpiple of parsimony
-   #NOTE Wyckoff sets disrupts this idea a bit... e.g. P-1 add 8 atoms all to special sites is very symmetric
-   #ignore this subtlety for now. Believe that build cell works on merging atoms from all being on general position
-   #so presumably that would also find it very very hard to make configurations like that.
-   temp = [[key, sum(zsk2nmols(key, mols))] for key in zsa]
-   sorted_keys = [x[0] for x in sorted(temp, key=lambda x: -x[1])]
+    #TODO also parse max extra sites to single_mol_perms
+    max_extra sites is the maxmimu number of additiona wyckoff sites to use over the minimum number
+    """
+    # sort the keys in zsa by number of molecules to add
+    # multiplicity increases with dimensionality (incorrectly called "rank" in this code)
+    # so having more moleculs left after zero site allocation is desirable from princpiple of parsimony
+    # NOTE Wyckoff sets disrupts this idea a bit... e.g. P-1 add 8 atoms all to special sites is very symmetric
+    # ignore this subtlety for now. Believe that build cell works on merging atoms from all being on general position
+    # so presumably that would also find it very very hard to make configurations like that.
+    temp = [[key, sum(zsk2nmols(key, mols))] for key in zsa]
+    sorted_keys = [x[0] for x in sorted(temp, key=lambda x: -x[1])]
 
-   #find out which sites which molcules can go on and form up the multiplicities
-   gsite_dic = defaultdict(list)
-   for i, mol in enumerate(mols):
-      for site in sg.sites:
-         if site.rank > 0 and site.mult <= mol.number:
-               if mol.Otype == "Mol" and PT[mol.symbol.ind][site.symbol.ind] == 0:
-                  continue
-               gsite_dic[i].append(site.index)
+    # find out which sites which molcules can go on and form up the multiplicities
+    gsite_dic = defaultdict(list)
+    for i, mol in enumerate(mols):
+        for site in sg.sites:
+            if site.rank > 0 and site.mult <= mol.number:
+                if mol.Otype == "Mol" and PT[mol.symbol.ind][site.symbol.ind] == 0:
+                    continue
+                gsite_dic[i].append(site.index)
 
-   mults = [site.mult for site in sg.sites]
-   #print("gsite_dic is", gsite_dic)
-   #print("mults are", mults)
+    mults = [site.mult for site in sg.sites]
 
-   #loop different zero site "keys" construcuting different ways of finishing the allocation
-   #keys are "how many of each molecule was put on zero sites" e.g. (0,0) means no objects on zero sites
-   all_perms = defaultdict(list)
-   total = 0
-   current_length = sum(zsk2nmols(sorted_keys[0], mols))
-   all_mol_options = defaultdict(dict)
-   max_unique_sites = None
-   for key in sorted_keys:
-      new_length = sum(zsk2nmols(key, mols))
-      #print(f"key is {key}, and total is {total}")
+    # loop different zero site "keys" construcuting different ways of finishing the allocation
+    # keys are "how many of each molecule was put on zero sites" e.g. (0,0) means no objects on zero sites
+    all_perms = defaultdict(list)
+    total = 0
+    current_length = sum(zsk2nmols(sorted_keys[0], mols))
+    all_mol_options = defaultdict(dict)
+    max_unique_sites = None
+    for key in sorted_keys:
+        new_length = sum(zsk2nmols(key, mols))
+        # print(f"key is {key}, and total is {total}")
 
-      cond1 = new_length < current_length and total > max_options
-      cond2 = total > 10 * max_options
-      if cond1 or cond2:
-        print("breaking at", total, "options")
-        break
-      nmols = zsk2nmols(key, mols)
-      #print(f"\nnmols is {nmols} and new_length is {new_length}")
-      for mol_ind, n in enumerate(nmols):
-         #only form the molecule options if they haven't been formed already
-         #this can be done independently for each molecule as the sites can be multiply occupied
-         #NOTE single mol_perms are returned INDEPENDENTLY SYMMETRY REDUCED!!
-         #THEY MUST BE combined expanded and then symmetry reduced again
-         if n not in all_mol_options[mol_ind]:
-               #print("generating single mol_perms for mol_ind", mol_ind, "n", n, "max_options", max_options)
-               all_mol_options[mol_ind][n] = single_mol_perms(gsite_dic[mol_ind], mults, n, max_options=max_options, norm_perms=sg.norm_perms)
-               #print("all_mol_options[mol_ind][n] is", all_mol_options[mol_ind][n])
+        cond1 = new_length < current_length and total > max_options
+        cond2 = total > 10 * max_options
+        if cond1 or cond2:
+            print("breaking at", total, "options")
+            break
+        nmols = zsk2nmols(key, mols)
+        # print(f"\nnmols is {nmols} and new_length is {new_length}")
+        for mol_ind, n in enumerate(nmols):
+            # only form the molecule options if they haven't been formed already
+            # this can be done independently for each molecule as the sites can be multiply occupied
+            # NOTE single mol_perms are returned INDEPENDENTLY SYMMETRY REDUCED!!
+            # THEY MUST BE combined expanded and then symmetry reduced again
+            if n not in all_mol_options[mol_ind]:
+                # #print("generating single mol_perms for mol_ind", mol_ind, "n", n, "max_options", max_options)
+                all_mol_options[mol_ind][n] = single_mol_perms(gsite_dic[mol_ind], mults, n, max_options=max_options, norm_perms=sg.norm_perms)
+                # #print("all_mol_options[mol_ind][n] is", all_mol_options[mol_ind][n])
 
-      #check it's possible to allocate all molecules.
-      nopts = [len(all_mol_options[mol_ind][n]) for mol_ind, n in enumerate(nmols) ]
-      #print("nopts is", nopts)
-      
-      #NOTE bugfxed on 16.04.2024 - special case where all objects are on special wyckoff site was causing this to fail
-      #solution was get single_mol_perms to return an empty list. 
-      if 0 in nopts:
-         print("skipping becuase no way of allocating all molecules")
-         continue
-
-      #now form appropriate combinations.
-      for al in zsa[key]:
-         #print("al is", al)
-         mol_opts = [all_mol_options[mol_ind][n] for mol_ind, n in enumerate(nmols)]
-         nu_z = sum([len(al[mol_ind]) for mol_ind in al])
-         if nu_z > max_extra_sites:
+        # check it's possible to allocate all molecules.
+        nopts = [len(all_mol_options[mol_ind][n]) for mol_ind, n in enumerate(nmols) ]
+        # NOTE bugfxed on 16.04.2024 - special case where all objects are on special wyckoff site
+        # was causing this to fail.
+        # solution was get single_mol_perms to return an empty list.
+        if 0 in nopts:
+            print("skipping becuase no way of allocating all molecules")
             continue
 
-         counter = 0
-         for gen_opt in itertools.product(*mol_opts):
-            #print("gen_opt is", gen_opt)
-            counter += 1
-            #count the number of sites used
-            nu_q = sum([len(opt) for opt in gen_opt])
-            nu = nu_z + nu_q
-            if len(all_perms.keys()) > 0:
-               max_unique_sites = min(all_perms.keys()) + max_extra_sites
-            else:
-               max_unique_sites = nu + max_extra_sites
-            if nu > max_unique_sites:
-                  continue
-            all_perms[nu].append({"zs_al":al, "gen_al":convert_gen_opt(gen_opt)})
+        # now form appropriate combinations.
+        for al in zsa[key]:
+            # print("al is", al)
+            mol_opts = [all_mol_options[mol_ind][n] for mol_ind, n in enumerate(nmols)]
+            nu_z = sum([len(al[mol_ind]) for mol_ind in al])
+            if nu_z > max_extra_sites:
+                continue
 
-            #check how many options and delete the ones which use most sites
-            if counter % 1000 == 0:
-               total = sum([len(x) for x in all_perms.values()])
+            counter = 0
+            for gen_opt in itertools.product(*mol_opts):
+                # print("gen_opt is", gen_opt)
+                counter += 1
+                # count the number of sites used
+                nu_q = sum([len(opt) for opt in gen_opt])
+                nu = nu_z + nu_q
+                if len(all_perms.keys()) > 0:
+                    max_unique_sites = min(all_perms.keys()) + max_extra_sites
+                else:
+                    max_unique_sites = nu + max_extra_sites
+                if nu > max_unique_sites:
+                    continue
+                all_perms[nu].append({"zs_al": al, "gen_al": convert_gen_opt(gen_opt)})
 
-               if total > 10 * max_options:
-                 print(f"breaking because have {total} options")
-                 break
-         if total > 10 * max_options:
-                 break
+                # check how many options and delete the ones which use most sites
+                if counter % 1000 == 0:
+                    total = sum([len(x) for x in all_perms.values()])
 
+                    if total > 10 * max_options:
+                        print(f"breaking because have {total} options")
+                        break
+            if total > 10 * max_options:
+                break
 
-      #all_perms +=  new_complete_allocation(zsa[key], all_mol_options, nmols, norm_perms=sg.norm_perms, max_options=max_options)
-      total = sum([len(x) for x in all_perms.values()])
-      current_length = new_length
-      #for nu, temp in all_perms.items():
-      #   print(f"nu is {nu}, len(temp) is {len(temp)}")
-      #print(f"total is {total} and current_length is {current_length}")
+        # all_perms +=  new_complete_allocation(zsa[key], all_mol_options, nmols, norm_perms=sg.norm_perms, max_options=max_options)
+        total = sum([len(x) for x in all_perms.values()])
+        current_length = new_length
+        # for nu, temp in all_perms.items():
+        #   print(f"nu is {nu}, len(temp) is {len(temp)}")
 
-   #NOTE prints out final deatils - looks very very sane... 44 atom cells works fine with all spacegroups
-   if False:
-      total = sum([len(x) for x in all_perms.values()])
-      print('finishing with total', total, "ways, before symmetry expansion")
-      for key, opts in all_perms.items():
-         print(key, len(opts))
-         for opt in opts:
-            print(opt)
+        # print(f"total is {total} and current_length is {current_length}")
 
-   return all_perms
+    # NOTE prints out final deatils - looks very very sane... 44 atom cells works fine with all spacegroups
+    if False:
+        total = sum([len(x) for x in all_perms.values()])
+        print('finishing with total', total, "ways, before symmetry expansion")
+        for key, opts in all_perms.items():
+            print(key, len(opts))
+            for opt in opts:
+                print(opt)
+
+    return all_perms
 
 
 def single_mol_perms(gsites, mults, n, norm_perms=[], max_options=1000):
@@ -316,56 +315,57 @@ def find_sums(ints):
 
 
 def zero_site_allocation(sg, mols, pt, site_mult_restrictions={}, site_rank_restrictions={}):
-   """returns a dict containing all zero site allocations of molecules
-   for given spacegroup. key is number of each molcule"""
-   #1-3a variant where all sites used and form full form of allocation is used
+    """
+    Return a dict containing all zero site allocations of molecules for given spacegroup.
 
-   gsites = []
-   for mol in mols:
-      gs = []
-      for site in sg.sites:
-         if site.rank > 0 or site.mult > mol.number:
-            continue
-         if mol.Otype == "Mol":
-            if pt[mol.symbol.ind][site.symbol.ind] == 0:
-               continue
-         if mol.name in site_mult_restrictions:
-            if site.mult != site_mult_restrictions[mol.name]:
-               continue
-         #added in site rank restrictions
-         if mol.name in site_rank_restrictions:
-            rs = site_rank_restrictions[mol.name]
-            if site.rank > rs[1] or site.rank < rs[0]:
-               continue
-         #if here then site is a good one!
-         gs.append(site.index)
-      gsites.append(gs)
-   mults = [site.mult for site in sg.sites]
-   nmols = [mol.number for mol in mols]
-   #gsites is list of allowed sites indices for each molecule
-   #mults is list of site multiplicities for every site in spacegroup
+    key is number of each molcule
+    """
+    # 1-3a variant where all sites used and form full form of allocation is used
+    gsites = []
+    for mol in mols:
+        gs = []
+        for site in sg.sites:
+            if site.rank > 0 or site.mult > mol.number:
+                continue
+            if mol.Otype == "Mol":
+                if pt[mol.symbol.ind][site.symbol.ind] == 0:
+                    continue
+            if mol.name in site_mult_restrictions:
+                if site.mult != site_mult_restrictions[mol.name]:
+                    continue
+            # added in site rank restrictions
+            if mol.name in site_rank_restrictions:
+                rs = site_rank_restrictions[mol.name]
+                if site.rank > rs[1] or site.rank < rs[0]:
+                    continue
+            # if here then site is a good one!
+            gs.append(site.index)
+        gsites.append(gs)
+    # gsites is list of allowed sites indices for each molecule
+    mults = [site.mult for site in sg.sites]
+    # mults is list of site multiplicities for every site in spacegroup
+    nmols = [mol.number for mol in mols]
 
-   #4. create list of keys of possible zero site allocations
-   zsks = zero_site_keys(nmols, gsites, mults)
-   #print("zsks are", zsks)
+    # 4. create list of keys of possible zero site allocations
+    zsks = zero_site_keys(nmols, gsites, mults)
 
-   #4a. get list of permuations on full cell site indicies
-   G = sg.norm_perms
-   #G = []      #TODO change to this to see full effect of normaliser
+    # 4a. get list of permuations on full cell site indicies
+    G = sg.norm_perms
+    # G = []      #TODO change to this to see full effect of normaliser
 
-   #5. for each number of mols to allocate, add all possibilities to dict
-   zsas = {}
-   total = 0
+    # 5. for each number of mols to allocate, add all possibilities to dict
+    zsas = {}
+    total = 0
 
-   for lkey in zsks:
-      key = str(lkey)[1:-1]
-      zsp = zero_site_perms(lkey, mults, gsites, G)
-      total += len(zsp)
-      zsas[key] = zsp
-      #print("key is", key, "len(zsp) is", len(zsp))
-      #print("zsp is", zsp)
-   #print("total number of zsas is", total)
-   return zsas
+    for lkey in zsks:
+        key = str(lkey)[1:-1]
+        zsp = zero_site_perms(lkey, mults, gsites, G)
+        total += len(zsp)
+        zsas[key] = zsp
+        # print("key is", key, "len(zsp) is", len(zsp))
+        # print("zsp is", zsp)
+    # print("total number of zsas is", total)
+    return zsas
 
 
 def zero_site_perms(lkey, mults, gsites, S,  perm=None, index=0):

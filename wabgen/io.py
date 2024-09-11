@@ -3,8 +3,8 @@
 
 import os
 import shutil
+from collections import OrderedDict
 import numpy as np
-from wabgen.utils.castep import general_castep_parse
 from wabgen.core import Molecule
 
 # find the directory
@@ -38,13 +38,101 @@ def prepare_output_directory(directory_path, not_reset=False):
                         shutil.rmtree(file_path)
                 except Exception as e:
                     print(f'Failed to delete {file_path}. Reason: {e}')
-            print(f"All files deleted in the directory: {directory_path}")
+            print(f"All files were deleted in the directory: {directory_path}")
 
         else:
             print("Generation will not be restarted")
             removed = False
 
     return removed
+
+
+def parse_word(word):
+    """TODO."""
+    floatChars = ['.', 'e', 'E']
+    try:
+        for c in floatChars:
+            if c in word:
+                return float(word)
+        return int(word)
+    except ValueError:
+        return word
+
+
+def general_castep_parse(fname, argType=None, ignoreComments=True):
+    """
+    Parse general 'castep-like' input files.
+
+    Can pass either a filename, or a string. File (i.e. filename) is assumed by default.
+    If 'ignoreComments', then all Castep comments (i.e. everything following '#' or '!')
+    are not parsed
+    """
+    if argType == str:
+        flines = fname.split('\n')
+    else:
+        f = open(fname, 'r')
+        flines = f.readlines()
+
+    # Strip all EOL chars
+    for i in range(0, len(flines)):
+        flines[i] = flines[i].rstrip('\n')
+
+    # Strip all comments (if user does not request otherwise)
+    if ignoreComments:
+        for i in range(0, len(flines)):
+            flines[i] = flines[i].split('#')[0]
+            flines[i] = flines[i].split('!')[0]
+
+    # Delete empty lines
+    for i in reversed(range(0, len(flines))):
+        if len(flines[i]) == 0:
+            flines.pop(i)
+
+    parsed = OrderedDict()
+    i = 0
+    while i < len(flines):
+        # Comments
+        if flines[i].lstrip(' ').startswith('#') or flines[i].lstrip(' ').startswith('!'):
+            if None not in parsed:
+                parsed[None] = []
+            parsed[None].append(flines[i])
+        # Blocks
+        elif flines[i].lower().lstrip().startswith(r'%block'):
+            key = flines[i].lower().split()[1]
+            parsed[key] = []
+            i += 1
+            while not flines[i].lower().lstrip().startswith(r'%endblock'):
+                parsed[key].append(flines[i].split())
+                for iVal in range(0, len(parsed[key][-1])):
+                    parsed[key][-1][iVal] = parse_word(parsed[key][-1][iVal])
+                i += 1
+        # Blank lines
+        elif len(flines[i].split()) == 0:
+            pass
+        # Key-only lines (e.g. snap_to_symmetry)
+        elif len(flines[i].split()) == 1:
+            key = flines[i].lower()
+            parsed[key] = ''
+        # Key-value lines
+        else:
+            splitLine = flines[i].split()
+            key = splitLine[0].lower()
+            if splitLine[1] == ':':
+                splitLine.pop(1)
+            parsed[key] = []
+            for iVal in range(0, 1, len(splitLine)):
+                parsed[key].append(splitLine[iVal])
+                parsed[key][-1] = parse_word(parsed[key][-1])
+            # If the parameter is just a single word, don't need a list to contain it
+            if len(parsed[key]) == 1:
+                parsed[key] = parsed[key][0]
+        i += 1
+
+    # convert from floats to ints
+    if argType != str:
+        f.close()
+
+    return parsed
 
 
 def str_to_func(s):
@@ -74,192 +162,190 @@ def line_to_func(line):
 
 
 def parse_file(fname, st, template=False):
-   """Pass the input file and return a list of molecules objects."""
-   dsites = None
+    """Pass the input file and return a list of molecules objects."""
+    dsites = None
 
-   out = general_castep_parse(fname, ignoreComments=False)
+    out = general_castep_parse(fname, ignoreComments=False)
 
-   # setup the groups/ligands
-   groups = set()
-   for line in out["positions_abs"]:
-      groups.add(line[6])
+    # setup the groups/ligands
+    groups = set()
+    for line in out["positions_abs"]:
+        groups.add(line[6])
 
-   # print("Ligands:", groups)
+    # parse in the pressure, use 0.5 GPa if not present to aid convergence
+    P = 0.5
+    if "pressure" in out:
+        for line in out["pressure"]:
+            P = float(line[0])
 
-   # parse in the pressure, use 0.5 GPa if not present to aid convergence
-   P = 0.5
-   if "pressure" in out:
-      for line in out["pressure"]:
-         P = float(line[0])
-   # print("Pressure:", P, "GPa")
+    # parse in the gulp potentials
+    gps = []
+    if "gulp_potentials" in out:
+        for line in out["gulp_potentials"]:
+            gps.append(line)
 
-   # parse in the gulp potentials
-   gps = []
-   if "gulp_potentials" in out:
-      for line in out["gulp_potentials"]:
-         gps.append(line)
-   # print("GULP potentials:\n", gps)
+    unit_formular = []
+    if "unit_formular" in out:
+        for line in out["unit_formular"]:
+            if len(line) == 1:
+                unit_formular = line
+            elif len(line) == 2:
+                unit_formular = list(range(line[0], line[-1] + 1))
 
-   unit_formular = []
-   if "unit_formular" in out:
-      for line in out["unit_formular"]:
-        if len(line) == 1:
-           unit_formular = line
+    Z_molecules = {z: {"MOLS": [], "V_dist": None} for z in unit_formular}
 
-        elif len(line) == 2:
-           unit_formular = list(range(line[0], line[-1] + 1))
-   # print("unit_formular:", unit_formular)
+    # parse in the cell
+    cell_abc = []
+    if "lattice_abc" in out:
+        for line in out["lattice_abc"]:
+            for x in line:
+                cell_abc.append(float(x))
 
-   Z_molecules = {z: {"MOLS": [], "V_dist": None} for z in unit_formular}
+    # append the molecules to the mols object
+    mols = []
+    for group in groups:
+        # print(group)
+        coords = []
+        species = []
+        for line in out["positions_abs"]:
+            if line[6] == group:
+                species.append(line[0])
+                coords.append([line[1], line[2], line[3]])
+        number = 0     # default if not present
+        for line in out["insert"]:
+            if line[1] == group:
+                number = line[0]
+        if dsites is not None:
+            if group in dsites:
+                print(dsites[group])
+        # print("number:", number)
+        # print("species:", species)
+        mols.append(Molecule(species, coords, number=number, name=group, st=st))
+        # Probando la nueva estructura
+        for z in Z_molecules:
+            # print(number, z, number*z)
+            Z_molecules[z]["MOLS"].append(Molecule(species, coords, number=z*number, name=group, st=st))
 
-   # parse in the cell
-   cell_abc = []
-   if "lattice_abc" in out:
-      for line in out["lattice_abc"]:
-         for x in line:
-            cell_abc.append(float(x))
+    p_mols = []
 
-   # append the molecules to the mols object
-   mols = []
-   for group in groups:
-      # print(group)
-      coords = []
-      species = []
-      for line in out["positions_abs"]:
-         if line[6] == group:
-            species.append(line[0])
-            coords.append([line[1], line[2], line[3]])
-      number = 0     # default if not present
-      for line in out["insert"]:
-         if line[1] == group:
+    # add the atoms
+    for line in out["insert"]:
+        if "pre_made" in line[1]:
+            p_mols.append(line)
+        elif not line[1] in groups:
+            assert len(line) == 3, "The insert line is not well defined, three parameters should\
+be used: N name/symbol groups/atoms\ndetected: {}".format(" ".join([str(a) for a in line]))
             number = line[0]
-      if dsites is not None:
-         if group in dsites:
-            print(dsites[group])
-      # print("number:", number)
-      # print("species:", species)
-      mols.append(Molecule(species, coords, number=number, name=group, st=st))
-      # Probando la nueva estructura
-      for z in Z_molecules:
-        # print(number, z, number*z)
-        Z_molecules[z]["MOLS"].append(Molecule(species, coords, number=z*number, name=group, st=st))
+            atom_sym = line[1]
+            mols.append(Molecule([atom_sym], [0, 0, 0], number=number, Otype="Atom"))
+            # Probando la nueva estructura
+            for z in Z_molecules:
+                Z_molecules[z]["MOLS"].append(Molecule([atom_sym], [0, 0, 0], number=z*number, Otype="Atom"))
 
-   p_mols = []
+    # remove 0 species
+    if not template:
+        mols = [mol for mol in mols if mol.number > 0]
 
-   # add the atoms
-   for line in out["insert"]:
-      if "pre_made" in line[1]:
-         p_mols.append(line)
-      elif not line[1] in groups:
-         assert len(line) == 3, "The insert line is not well defined, three parameters should be\
-used: N name/symbol groups/atoms\ndetected: {}".format(" ".join([str(a) for a in line]))
-         number = line[0]
-         atom_sym = line[1]
-         mols.append(Molecule([atom_sym], [0, 0, 0], number=number, Otype="Atom"))
-         # Probando la nueva estructura
-         for z in Z_molecules:
-           Z_molecules[z]["MOLS"].append(Molecule([atom_sym], [0, 0, 0], number=z*number, Otype="Atom"))
+    # parse in the target volume as a normal distribution
+    V_dist = ""
+    if "volume_distribution" in out:
+        split = out["volume_distribution"][0]
+        for x in split:
+            V_dist += str(x) + " "
 
-   # remove 0 species
-   if not template:
-      mols = [mol for mol in mols if mol.number > 0]
+    # parse in the target volume as a normal distribution
+    if "density" in out:
+        vol_atom = out["density"][0][0]
+        # print("Density per atom [ang]^3 / N atom:", vol_atom)
+        for z in Z_molecules:
+            # print("Z:", z)
+            natoms = 0
+            for m in Z_molecules[z]["MOLS"]:
+                natoms += m.number * len(m.species)
+            # print("Total numer of atoms:", natoms)
+            v_centre = vol_atom * natoms
+            # print("Volume center:", v_centre)
+            v_min = v_centre - 100
+            v_max = v_centre + 100
+            # print("Volume range:", v_min, v_max)
+            Z_molecules[z]["V_dist"] = f"numpy.random.uniform low={v_min} high={v_max}"
 
-   # parse in the target volume as a normal distribution
-   V_dist = ""
-   if "volume_distribution" in out:
-      split = out["volume_distribution"][0]
-      for x in split:
-         V_dist += str(x) + " "
+    # read in the target_atom_numbers from a block
+    target_atom_nums = None
+    if "target_atom_numbers" in out:
+        if len(out) > 0:
+            target_atom_nums = {}
+        for line in out["target_atom_numbers"]:
+            target_atom_nums[line[0]] = int(line[1])
 
-   # parse in the target volume as a normal distribution
-   if "density" in out:
-      vol_atom = out["density"][0][0]
-      # print("Density per atom [ang]^3 / N atom:", vol_atom)
-      for z in Z_molecules:
-         # print("Z:", z)
-         natoms = 0
-         for m in Z_molecules[z]["MOLS"]:
-            natoms += m.number * len(m.species)
-
-         # print("Total numer of atoms:", natoms)
-         v_centre = vol_atom * natoms
-         # print("Volume center:", v_centre)
-         v_min = v_centre - 100
-         v_max = v_centre + 100
-         # print("Volume range:", v_min, v_max)
-         Z_molecules[z]["V_dist"] = f"numpy.random.uniform low={v_min} high={v_max}"
-   
-   #read in the target_atom_numbers from a block
-   target_atom_nums = None
-   if "target_atom_numbers" in out:
-      if len(out) > 0:
-         target_atom_nums = {}
-      for line in out["target_atom_numbers"]:
-         target_atom_nums[line[0]] = int(line[1])
-
-
-   # read in the min_seps
-   min_seps = None
-   if "min_seps" in out:
-      els = []
-      for el in out["min_seps"][0]:
-         els.append(el)
-      D = {}
-      for i,line in enumerate(out["min_seps"][1:]):
+    # read in the min_seps
+    min_seps = None
+    if "min_seps" in out:
+        els = []
+        for el in out["min_seps"][0]:
+            els.append(el)
+        D = {}
+        for i, line in enumerate(out["min_seps"][1:]):
             D[els[i]] = {}
-            for j,x in enumerate(line):
-               D[els[i]][els[j]] = float(x)
-      min_seps = [els, D]
+            for j, x in enumerate(line):
+                D[els[i]][els[j]] = float(x)
+        min_seps = [els, D]
 
-      #if minseps are not specified explicitly, this should be the default!
-      #use the sum of the known covalent radii as a starting point
-   else:
+        # if minseps are not specified explicitly, this should be the default!
+        # use the sum of the known covalent radii as a starting point
+    else:
+        fname = directory + "/data/covalent_radii.dat"
+        with open(fname, "r") as f:
+            c_rads = {}
+            for line in f:
+                ws = line.split()
+                c_rads[ws[0]] = float(ws[1])
 
-      fname = directory + "/data/covalent_radii.dat"
-      with open(fname, "r") as f:
-         c_rads = {}
-         for line in f:
-            ws = line.split()
-            c_rads[ws[0]] = float(ws[1])
+        # create list of all elements in the molecule
+        els = set()
+        for mol in mols:
+            for at in mol.species:
+                els.add(at)
+        els = list(els)
 
-      #create list of all elements in the molecule
-      els = set()
-      for mol in mols:
-         for at in mol.species:
-            els.add(at)
-      els = list(els)
+        # construct the relavent minseps object in the same style as before
+        D = {}
+        for el1 in els:
+            D[el1] = {}
+            for el2 in els:
+                D[el1][el2] = c_rads[el1]+c_rads[el2]
+        min_seps = [els, D]
 
-      #construct the relavent minseps object in the same style as before
-      D = {}
-      for el1 in els:
-         D[el1] = {}
-         for el2 in els:
-            D[el1][el2] = c_rads[el1]+c_rads[el2]
-      min_seps = [els,D]
+    geom_constraint = None
+    if "geom_constraint" in out:
+        geom_constraint = {}
+        for line in out["geom_constraint"]:
+            geom_constraint[line[0]] = line[1]
 
-   #pdict is perm_dict if a specific perm is specified
-   input_params = {}
-   input_params["mols"] = sorted(mols, key=lambda m: m.name)
+    # pdict is perm_dict if a specific perm is specified
+    input_params = {}
+    input_params["mols"] = sorted(mols, key=lambda m: m.name)
 
-   # print molecules to check they are read correctly
-   # if True and not template:
-   #    print("type of mols is", type(mols))
-   #    print("mols are")
-   #    for mol in mols:
-   #       print(mol.name, mol.number, mol.Otype)
-   #       if mol.Otype == "Mol":
-   #          print(mol.symbol.HM)
+    # print molecules to check they are read correctly
+    # if True and not template:
+    #    print("type of mols is", type(mols))
+    #    print("mols are")
+    #    for mol in mols:
+    #       print(mol.name, mol.number, mol.Otype)
+    #       if mol.Otype == "Mol":
+    #          print(mol.symbol.HM)
 
-   input_params["V_dist"] = V_dist
-   input_params["min_seps"] = min_seps
-   input_params["target_atom_nums"] = target_atom_nums
-   input_params["cell_abc"] = cell_abc
-   input_params["p_mols"] = p_mols
-   input_params["gulp_potentials"] = gps
-   input_params["pressure"] = P
-   input_params["Z_molecules"] = Z_molecules
+    input_params["V_dist"] = V_dist
+    input_params["min_seps"] = min_seps
+    input_params["target_atom_nums"] = target_atom_nums
+    input_params["cell_abc"] = cell_abc
+    input_params["p_mols"] = p_mols
+    input_params["gulp_potentials"] = gps
+    input_params["geom_constraint"] = geom_constraint
+    input_params["pressure"] = P
+    input_params["Z_molecules"] = Z_molecules
 
-   return input_params
+    return input_params
 
 
 def write_perm(perm, cell_name, o_name, sg, Mols):

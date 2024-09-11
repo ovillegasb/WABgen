@@ -55,7 +55,7 @@ def get_atomic_data():
       for x in w:
          if x != "(" and x != ")" and x != "[" and x != "]":
             w2 += x
-      info[lab] = {"Mr":float(w2)}
+      info[lab] = {"Mr": float(w2)}
 
 
    #2. read in covalent radii
@@ -81,5 +81,7 @@ def get_atomic_data():
          info[lab]["metal"] = True
       else:
          info[lab]["metal"] = False
+
+   info["X"] = {"Mr": 1.0, "rc": 0.0, "metal": False}
 
    return info

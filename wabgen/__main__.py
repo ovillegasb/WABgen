@@ -9,8 +9,11 @@ import time
 import random
 import psutil
 import glob
+import ase
+import copy
+import numpy as np
 from wabgen.io import parse_file, prepare_output_directory
-from wabgen.core import SG, standardize_Molecule, pick_option
+from wabgen.core import SG, Molecule, GEOM_constraint
 from wabgen.utils import symm
 from wabgen.utils.align import read_rotation_dict
 from wabgen.utils.allocate import zero_site_allocation, new_site_allocation, convert_new_SA_to_old
@@ -72,7 +75,15 @@ Example:
 
 python -m wabgen system.cell -n 100 --push_apart flexible --parallel
 
+python -m wabgen system.cell -n 10 --parallel
+
 python -m wabgen system.cell -n 100 --push_apart flexible --parallel --sg_list 1
+
+python -m wabgen system.cell -n 100 --parallel --sg_list 1-50
+
+python -m wabgen system.cell -n 100 --parallel --sg_list 1 5 10 50
+
+python -m wabgen system.cell -n 10 --parallel -nc 1 --push_apart flexible --minsep_noise 0.1
 
 """
 
@@ -124,7 +135,6 @@ ve")
 
     settings.add_argument(
         "--sg_list",
-        type=int,
         default=None,
         help="Selection of space groups (1-230).",
         nargs="+"
@@ -221,6 +231,23 @@ ve")
     return vars(parser.parse_args())
 
 
+def pick_option(sg_opts):
+    """
+    Pick an option from {sg_ind: {total_sites: [options]}}.
+
+    weight to favour using fewer sites. P = 1/2 for fewest sites, P = 1/4 for next fewest etc.
+    Could argue this is not aggressive enough...
+    could also argue that there will be fewer options for lower numbers of sites and this is
+    already exponential!
+    """
+    n_sites = sorted(list(sg_opts.keys()))
+    ws = [1/(2**i) for i in range(len(n_sites))]
+    ps = [w/sum(ws) for w in ws]
+    n = np.random.choice(n_sites, p=ps)
+    opt = np.random.choice(sg_opts[n])
+    return opt
+
+
 def main():
     """Run main function."""
     print(TITLE)
@@ -238,7 +265,6 @@ def main():
     site_rank_restrictions = {}
     output_folder = "completed"
     n_completed = 0
-
     print("\t{:<35}{:>20}".format("Input file: ", seed))
 
     if args["parallel"]:
@@ -255,16 +281,31 @@ def main():
     print("\t{:<35}{:>20}".format("Number of cpus: ", Nc + 1))
     print("\t{:<35}{:>20}".format("Number of files to generate: ", N))
     print("\t{:<35}{:>20}".format("Output format: ", form))
+
+    # Checking sg_list
     if sg_list is not None:
+        try:
+            sg_list = [int(sg) for sg in sg_list]
+        except ValueError:
+            if len(sg_list) == 1:
+                sg_i, sg_e = [int(sg) for sg in sg_list[0].split("-")]
+                sg_list = list(range(sg_i, sg_e + 1))
+
         if len(sg_list) == 1:
             sgb = sg_list.copy()
+
         else:
             sgb = sorted(sg_list.copy())
             sgb = [sgb[0], sgb[-1]]
 
-    print("\t{:<35}{:>20}".format("Range of selected spacegroups: ", "-".join(
+    # spacegroup list selected.
+    if sg_list is None:
+        sg_list = [x for x in range(sgb[0], sgb[1]+1)]
+
+    print("\t{:<35}{:>20} ({})".format("Range of selected spacegroups: ", "-".join(
         [str(i) for i in sgb]
-    )))
+    ), len(sg_list)))
+
     print("\t{:<35}{:>20}".format("Output folder: ", output_folder))
     print("")
     # Prepare output folder
@@ -277,9 +318,6 @@ def main():
             print("Completed files meet the generation criteria increase N or delete files.")
             exit()
 
-    # prepare_output_directory("duplicates")
-    # prepare_output_directory("rejected")
-
     # parse in the input file containing the molecules objects
     params = parse_file(seed, args["symmetry_tolerance"], template="True")
 
@@ -291,89 +329,110 @@ def main():
     gps = params["gulp_potentials"]
     pressure = params["pressure"]
     Z_molecules = params["Z_molecules"]
+    geom_constraint = params["geom_constraint"]
 
     # generate all instances of the spacegroup class here, should speed things up!
     t_i = time.time()
-    print("reading in spacegroup representation")
-    SpaceGroups = [[]]
-    ConvSpaceGroups = [[]]
-    for i in range(1, 231):
-        SpaceGroups.append(SG(symm.retrieve_symmetry_group(i, reduce_to_prim=True)))
-        ConvSpaceGroups.append(SG(symm.retrieve_symmetry_group(i, reduce_to_prim=False)))
+    print("\nReading in spacegroup representation from selected")
+
+    SpaceGroups = {}
+    # ConvSpaceGroups = [[]]
+    for i in sg_list:
+        SpaceGroups[i] = SG(symm.retrieve_symmetry_group(i, reduce_to_prim=True))
+        # ConvSpaceGroups.append(SG(symm.retrieve_symmetry_group(i, reduce_to_prim=False)))
 
     t_f = time.time()
     execution_time = t_f - t_i
     print("done in %.3f s" % execution_time)
 
-    # standardize the molecules
+    # standardize the molecules? Why? TODO
     t_i = time.time()
-    print("standardiszing molecules")
-    temp_fname = directory + "/data/templates.cell"
+    # print("standardiszing molecules")
+    # temp_fname = directory + "/data/templates.cell"
+    # Rot_dicts? TODO. definition
     Rot_dicts = {}
+    if geom_constraint is not None:
+        constraint = GEOM_constraint(d=1.0)
+
+    mols = Z_molecules[list(Z_molecules.keys())[0]]["MOLS"]
     for i, mol in enumerate(mols):
-        mol.print_symm_info()
-        mols[i] = standardize_Molecule(mol, temp_fname, args["symmetry_tolerance"])
-        if mol.Otype == "Mol":
-            Rot_dicts[mol.name] = read_rotation_dict(mols[i], SpaceGroups)
+        if mol.name in geom_constraint:
+            # strategy
+            pg = geom_constraint[mol.name]
+            geom = constraint.set_point_group(pg)
+            geom += ase.Atom(mol.name, (0, 0, 0))
+            new_mol = Molecule(
+                    geom.get_chemical_symbols(),
+                    geom.get_positions(),
+                    number=mol.number,
+                    Otype="Mol",
+                    name=f"coord-{mol.name}",
+                    constraint="coordination"
+                )
+            Rot_dicts[new_mol.name] = read_rotation_dict(new_mol, SpaceGroups)
+            new_mol.species = [at.replace("H", "X") for at in new_mol.species]
+            mols[i] = new_mol
+        else:
+            if mol.Otype == "Mol":
+                Rot_dicts[mol.name] = read_rotation_dict(mol, SpaceGroups)
 
     for z in Z_molecules:
         mols_z = Z_molecules[z]["MOLS"]
         for i, mol in enumerate(mols_z):
-            mol.print_symm_info()
-            Z_molecules[z]["MOLS"][i] = standardize_Molecule(
-                mol, temp_fname, args["symmetry_tolerance"]
-            )
+            if mol.name in geom_constraint:
+                new_mol = copy.deepcopy(mols[i])
+                new_mol.number = mol.number
+                Z_molecules[z]["MOLS"][i] = new_mol
+
+        Z_molecules[z]["ROT_dict"] = Rot_dicts
+        Z_molecules[z]["options"] = {}
 
     t_f = time.time()
     execution_time = t_f - t_i
     print("done in %.3f s" % execution_time)
 
-    # spacegroup list
-    if sg_list is None:
-        sg_list = [x for x in range(sgb[0], sgb[1]+1)]
-
+    # Generation options part
     t_i = time.time()
-    new_options = {}
-    # generating ooptions for z
-    for z in Z_molecules:
-        Z_molecules[z]["options"] = {}
-
+    # new_options = {}
     print("Generating options")
+    n_sg_list = len(sg_list)
+    for j, sg in enumerate(sg_list):
+        # print("\r", j+1, "/", n_sg_list, SpaceGroups[sg].name, end="\n")
+        # zsa = zero_site_allocation(
+        #     SpaceGroups[sg],
+        #     mols,
+        #     placement_table,
+        #     site_mult_restrictions=site_mult_restrictions,
+        #     site_rank_restrictions=site_rank_restrictions
+        # )
 
-    for j, sg_ind in enumerate(sg_list):
-        print("\r", j+1, "/", len(sg_list), SpaceGroups[sg_ind].name, end="\n")
-        zsa = zero_site_allocation(
-            SpaceGroups[sg_ind],
-            mols,
-            placement_table,
-            site_mult_restrictions=site_mult_restrictions,
-            site_rank_restrictions=site_rank_restrictions
-        )
-        print("\r", j+1, "/", len(sg_list), SpaceGroups[sg_ind].name, "finished 0D allocations", end="")
-
-        new_options[sg_ind] = new_site_allocation(
-            SpaceGroups[sg_ind],
-            mols,
-            placement_table,
-            zsa,
-            msr=site_mult_restrictions,
-            srr=site_rank_restrictions,
-            max_options=args["max_options"]
-        )
+        # print("\r", j+1, "/", n_sg_list, SpaceGroups[sg].name, "finished 0D allocations")  # , end=""
+        # new_options[sg] = new_site_allocation(
+        #     SpaceGroups[sg],
+        #     mols,
+        #     placement_table,
+        #     zsa,
+        #     msr=site_mult_restrictions,
+        #     srr=site_rank_restrictions,
+        #     max_options=args["max_options"]
+        # )
 
         # Doing for every Z value
         for z in Z_molecules:
             mols_z = Z_molecules[z]["MOLS"]
+            # print("Val Z =", z)
+            # print("\r", j+1, "/", n_sg_list, SpaceGroups[sg].name, end="\n")
             zsa = zero_site_allocation(
-                SpaceGroups[sg_ind],
+                SpaceGroups[sg],
                 mols_z,
                 placement_table,
                 site_mult_restrictions=site_mult_restrictions,
                 site_rank_restrictions=site_rank_restrictions
             )
 
-            Z_molecules[z]["options"][sg_ind] = new_site_allocation(
-                SpaceGroups[sg_ind],
+            # print("\r", j+1, "/", n_sg_list, SpaceGroups[sg].name, "finished 0D allocations")  # , end=""
+            Z_molecules[z]["options"][sg] = new_site_allocation(
+                SpaceGroups[sg],
                 mols_z,
                 placement_table,
                 zsa,
@@ -383,43 +442,43 @@ def main():
             )
 
     print("\nincluding rotations...")
-    full_options = new_options
-    # print(full_options)
-    zkeys = []
-    print("final options are...")
-    for sg_ind in full_options:
-        print(sg_ind, "/", len(sg_list), SpaceGroups[sg_ind].name, len(full_options[sg_ind]))
-        if len(full_options[sg_ind]) == 0:
-            zkeys.append(sg_ind)
+    # full_options = new_options
+    # zkeys = []
+    print("final options accepted are...")
+    # for j, sg in enumerate(full_options):
+    #     print(j + 1, "/", n_sg_list, SpaceGroups[sg].name, len(full_options[sg]))
+    #     if len(full_options[sg]) == 0:
+    #         zkeys.append(sg)
 
-    for sg_ind in zkeys:
-        del full_options[sg_ind]
+    # for sg in zkeys:
+    #     del full_options[sg]
 
     for z in Z_molecules:
         full_options_Z = Z_molecules[z]["options"]
         zkeys = []
 
-        for sg_ind in full_options_Z:
-            if len(full_options_Z[sg_ind]) == 0:
-                zkeys.append(sg_ind)
+        for sg in full_options_Z:
+            if len(full_options_Z[sg]) == 0:
+                zkeys.append(sg)
 
-        for sg_ind in zkeys:
-            del Z_molecules[z]["options"][sg_ind]
+        for sg in zkeys:
+            del Z_molecules[z]["options"][sg]
+
+    # print("Z_molecules", Z_molecules)
 
     # create a list of weighted options to use for the random loop
-    sg_inds = [key for key in full_options]
-
-    weighted_options, freq_list = weight_spacegroups(
-        sg_inds,
-        SpaceGroups,
-        weighting=args["sg_weight"],
-        filename=args["sg_fs_file"]
-    )
+    # sg_accepted = [key for key in full_options]
+    # weighted_options, freq_list = weight_spacegroups(
+    #     sg_accepted,
+    #     SpaceGroups,
+    #     weighting=args["sg_weight"],
+    #     filename=args["sg_fs_file"]
+    # )
 
     for z in Z_molecules:
-        sg_inds = [key for key in Z_molecules[z]["options"]]
+        sg_selected = [key for key in Z_molecules[z]["options"]]
         Z_molecules[z]["weighted_options"], _ = weight_spacegroups(
-            sg_inds,
+            sg_selected,
             SpaceGroups,
             weighting=args["sg_weight"],
             filename=args["sg_fs_file"]
@@ -438,7 +497,7 @@ def main():
         "V_dist": V_dist,
         "cell_abc": cell_abc,
         "sg_ind": 1,
-        "mols": mols,
+        "mols": None,
         "n_tries": args["n_tries"],
         "target_atom_nums": target_atom_nums,
         "form": form,
@@ -449,7 +508,8 @@ def main():
         "pressure": pressure,
         "minsep_noise": args["minsep_noise"],
         "aenet_relax": args["aenet_relax"],
-        "Rot_dicts": Rot_dicts}
+        "Rot_dicts": None
+    }
 
     ###############
     # BUCLE central
@@ -498,23 +558,30 @@ def main():
         if counter.value < N:
             # Choosing a random Z value for each iteration.
             z_val = random.choice(list(Z_molecules.keys()))
-            print(f"\tMolecular formula Z={z_val}")
+            print(f"Molecular formula (Z) chosen = {z_val}")
             full_options = Z_molecules[z_val]["options"]
+            # print("full_options:", full_options)
             z_weighted_options = Z_molecules[z_val]["weighted_options"]
-            lw0 = len(z_weighted_options)
-            if lw0 > 0:
-                r = random.randint(0, len(z_weighted_options)-1)
-            else:
-                r = 0
-            sg_ind = z_weighted_options[r]
-            arg_dict["sg_ind"] = sg_ind
-            arg_dict["sg"] = SpaceGroups[sg_ind]
+            z_sg_selected = list(z_weighted_options.keys())
+            z_sg_chose = random.choice(z_sg_selected)
+            print(f"SpaceGroup ind chosen = {z_sg_chose}")
+
+            # Modifying arguments
+            arg_dict["sg_ind"] = z_sg_chose
+            arg_dict["sg"] = SpaceGroups[z_sg_chose]
             arg_dict["Z_val"] = z_val
             arg_dict["V_dist"] = Z_molecules[z_val]["V_dist"]
+            arg_dict["Rot_dicts"] = Z_molecules[z_val]["ROT_dict"]
             full_mols = Z_molecules[z_val]["MOLS"]
-            print(f"\tPicking perm for sg={sg_ind} from stratified options.")
-            new_perm = pick_option(full_options[sg_ind])
-            perm = convert_new_SA_to_old(new_perm, SpaceGroups[sg_ind], placement_table, full_mols)
+            # print(f"Picking perm for sg={z_sg_chose} from stratified options.")
+            new_perm = pick_option(full_options[z_sg_chose])
+            perm = convert_new_SA_to_old(
+                new_perm,
+                SpaceGroups[z_sg_chose],
+                placement_table,
+                full_mols
+            )
+            # print("perm", perm)
             perm = [-1, perm]  # modification as now expects [dof, perm]
             arg_dict["mols"] = full_mols
 
