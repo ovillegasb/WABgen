@@ -18,6 +18,9 @@ You can start from a virtual environment local:
 ```sh
 python -m venv .venv --copies --prompt Wabgen
 source .venv/bin/activate
+pip install setuptools
+
+git clone https://github.com/ovillegasb/WABgen.git
 python setup.py install
 ```
 

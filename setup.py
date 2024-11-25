@@ -26,5 +26,8 @@ setup(
             'wabgen=wabgen.__main__:main',
         ],
     },
+    package_data={
+        'wabgen': ['data/*'],
+    },
     python_requires='>=3.10'
 )
