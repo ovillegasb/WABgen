@@ -27,7 +27,8 @@ setup(
         ],
     },
     package_data={
-        'wabgen': ['data/*'],
+        'wabgen': ['data/**/*'],
     },
+    include_package_data=True,
     python_requires='>=3.10'
 )
