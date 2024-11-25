@@ -143,7 +143,7 @@ def ops2symbol_dict(ops):
    return symbol_dict
 
 
-def mol2site2(mol,site):
+def mol2site2(mol, site):
    """returns list of rotation matrices that align molecule with site
    so that symmetry operators of site are preserved. empty list if not possible"""
    Rs = []
@@ -376,54 +376,71 @@ def RCI(mol, site, M):
 
 
 def read_rotation_dict(mol, SpaceGroups):
-   fname = directory + "/../data/rot_normalisers/" + mol.point_group_sch+"/"+mol.point_group_sch+"_rotdict.txt.gz"
+    """Read rotation dict for a molecule."""
+    fname = directory + "/../data/rot_normalisers/" + mol.point_group_sch + "/" + mol.point_group_sch + "_rotdict.txt.gz"
+    folname = directory + "/../data/rot_normalisers/" + mol.point_group_sch
+    if not os.path.exists(folname):
+        os.mkdir(folname)
+        print("folname is", folname)
+    if not os.path.exists(fname):
+        print("couldn't find rotation dict, generating it")
+        write_rotation_dict(mol, SpaceGroups)
+    else:
+        pass
 
-   folname = directory + "/../data/rot_normalisers/" + mol.point_group_sch
-   if not os.path.exists(folname):
-      os.mkdir(folname)
-      print("folname is", folname)
-   if not os.path.exists(fname):
-      print("couldn't find rotation dict, generating it")
-      write_rotation_dict(mol, SpaceGroups)
-   else:
-      pass
-
-   rot_dict = read_db(fname)
-   return rot_dict
+    rot_dict = read_db(fname)
+    return rot_dict
 
 
 def write_rotation_dict(mol, SpaceGroups):
-   """takes in a molecule, loops over all spacegroups and all sites
-   and write the ea0 for each number to a file"""
-   fname = directory + "/../data/rot_normalisers/" + mol.point_group_sch+ "/"+mol.point_group_sch +"_rotdict.txt"
-   print("fname is", fname)
-   print("mol.symbol is", mol.symbol.HM)
-   rot_dict = {}
-   for sg in SpaceGroups[1:]:
-      print("sg.name is", sg.name)
-      rot_dict[sg.number] = {}
-      for site in sg.sites:
-         #print("site.letter is", site.letter, "site.symbol is", site.symbol.HM)
-         rot_dict[sg.number][site.letter] = {}
-         Ms = mol2site2(mol, site)
-         #if len(Ms) == 0 rot_dict[sg.number][site.letter] will remain empty, not an issue
-         for i,M in enumerate(Ms):
-            #print("generating rci0 for option", i, "/", len(Ms))
-            rci0 = RCI(mol, site, M)
-            #TODO remove this assertion it, debug only
-            if rci0 is not None:
-               R = ea02R(rci0, mol, site)
-               rci0_2 = RCI(mol, site, R)
-               assert rci0 == rci0_2
-            rot_dict[sg.number][site.letter][i] = rci0
-   write_db(rot_dict, fname)
-   return 0
+    """
+    Write rotation dict for Point group.
+
+    Takes in a molecule, loops over all spacegroups and all sites
+    and write the ea0 for each number to a file.
+    """
+    fname = directory + "/../data/rot_normalisers/" + mol.point_group_sch + "/" + mol.point_group_sch + "_rotdict.txt"
+    # print("fname is", fname)
+    # print("mol.symbol is", mol.symbol.HM)
+    rot_dict = {}
+    for j in SpaceGroups:
+        sg = SpaceGroups[j]
+        # print("-" * 50)
+        # print("sg.name is", sg.name)
+        # space group number
+        rot_dict[sg.number] = {}
+        # print("Wyckoff Sets:")
+        for site in sg.sites:
+            # print(f"\t({site.letter})", "HM symbol:", site.symbol.HM)
+            rot_dict[sg.number][site.letter] = {}
+            # Evaluates if a site is compatible for a molecule according to its point group.
+            # returns list of rotation matrices that align molecule with site so that symmetry operators of site are preserved
+            Ms = mol2site2(mol, site)
+            # print("Ms", Ms)
+            # if len(Ms) == 0 rot_dict[sg.number][site.letter] will remain empty, not an issue
+            for i, M in enumerate(Ms):
+                # print("generating rci0 for option", i, "/", len(Ms))
+                # Return the rotation matrix to align the molecule in position.
+                rci0 = RCI(mol, site, M)
+                # TODO remove this assertion it, debug only
+                # ####if rci0 is not None:
+                # ####    R = ea02R(rci0, mol, site)
+                # ####    rci0_2 = RCI(mol, site, R)
+                # ####    assert rci0 == rci0_2
+                rot_dict[sg.number][site.letter][i] = rci0
+    # print("-" * 50)
+
+    # At the end rot_dict contains a dictionary with each group space, and contains the compatible
+    # wycoff sites for a given group.
+    write_db(rot_dict, fname)
 
 
 def n2R(sg, mol, site, rotnum, rot_dict):
    """returns a rotation matrix from a rotnum
       also returns cartesian site axis if there is a free
       rotational degree of freedom!"""
+   # print("rotnum", rotnum)
+   # print("rot_dict", rot_dict.keys())
    try:
       ea0 = rot_dict[str(sg.number)][site.letter][str(rotnum)]
    except KeyError:

@@ -6,7 +6,7 @@ import json
 import gzip
 import spglib
 import numpy as np
-from wabgen.utils.cell import UnitCell
+import wabgen.utils
 
 # find the directory
 directory = os.path.dirname(__file__)
@@ -164,7 +164,7 @@ def cell2conv(cell, to_prim=False, stol=1e-4):
 
 
    #convert the cell to the standard format
-   cell = UnitCell(cartBasis=l)
+   cell = wabgen.utils.cell.UnitCell(cartBasis=l)
    for i in range(0,len(n)):
       cell.add_atom(label = periodicTable[n[i]], fracCoords = fp[i]) 
    return cell 

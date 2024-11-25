@@ -108,6 +108,10 @@ def parse_file(fname, st, template=False):
 
         elif len(line) == 2:
            unit_formular = list(range(line[0], line[-1] + 1))
+
+        else:
+           unit_formular = [int(i) for i in line]
+
    # print("unit_formular:", unit_formular)
 
    Z_molecules = {z: {"MOLS": [], "V_dist": None} for z in unit_formular}

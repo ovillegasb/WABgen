@@ -55,17 +55,17 @@ def gen_rand_cell(cell_abc=[]):
 
 
 def perm2mol_list(perm):
-   """spits perm into symmetry equivalent molcules to be added and then randomise order"""
-   mol_list = []
-   tag = 0
-   for molind, mol_alloc in perm.items():
-      for site_ind, rot_inds in mol_alloc.items():
-         for ri in rot_inds:
-            mol_list.append([molind, site_ind, ri, tag])
-            tag += 1
+    """Spits perm into symmetry equivalent molecules to be added and then randomise order."""
+    mol_list = []
+    tag = 0
+    for molind, mol_alloc in perm.items():
+        for site_ind, rot_inds in mol_alloc.items():
+            for ri in rot_inds:
+                mol_list.append([molind, site_ind, ri, tag])
+                tag += 1
 
-   random.shuffle(mol_list)
-   return mol_list
+    random.shuffle(mol_list)
+    return mol_list
 
 
 def random_rotation():
@@ -86,26 +86,46 @@ def random_rotation():
    return M
 
 
-def get_R_matrix(sg, mol, site, rot_ind, mol_rot_dict, theta =None):
-   """retrieves the matrix required to align the molecule with the site
-   and subs in for random degrees of freedom"""
-   Mopt = n2R(sg, mol, site, rot_ind, mol_rot_dict)
+def get_rand_R2(u, gam=None):
+   u = u/np.linalg.norm(u)
+   if gam is None:
+      gam = random.uniform(-np.pi,np.pi)
+   cos_gam = np.cos(gam)
+   sin_gam = np.sin(gam)
 
-   # print("Mopt is", Mopt)
+   Id = np.identity(3)
+   #wiki formula for R2
+   ux = np.array([[0,-u[2],u[1]],[u[2],0,-u[0]],[-u[1],u[0],0]])
+   ut = np.tensordot(u,u,axes=0)
+   R2 = cos_gam*Id + sin_gam*ux + (1-cos_gam)*ut
+   #print("only one alignemnet, randomised over the free angle")
+   return R2
 
-   if Mopt is None:
-      M = random_rotation()
-   elif len(Mopt) == 2:
-      M = Mopt[0]
-      site_axis = Mopt[1]
-      if theta is None:
-         R2 = wabgen.core.get_rand_R2(site_axis) #random rotation about site axis post alignment
-      else:
-         R2 = wabgen.core.get_rand_R2(site_axis, gam=theta) #random rotation about site axis post alignment
-      M = np.dot(R2,M)
-   else:
-      M = Mopt
-   return M, Mopt
+
+def get_R_matrix(sg, mol, site, rot_ind, mol_rot_dict, theta=None):
+    """
+    Return rotation matrix requiered.
+
+    Retrieves the matrix required to align the molecule with the site and subs in for random
+    degrees of freedom.
+    """
+    Mopt = n2R(sg, mol, site, rot_ind, mol_rot_dict)
+    # print("Mopt is", Mopt)
+
+    if Mopt is None:
+        M = random_rotation()
+    elif len(Mopt) == 2:
+        M = Mopt[0]
+        site_axis = Mopt[1]
+        if theta is None:
+            R2 = get_rand_R2(site_axis)  # random rotation about site axis post alignment
+        else:
+            R2 = get_rand_R2(site_axis, gam=theta)  # random rotation about site axis post alignment
+        M = np.dot(R2, M)
+    else:
+        M = Mopt
+
+    return M, Mopt
 
 
 def add_molecule(cell, mols, ml, sg, Rot_dicts, add_centre, frac_pos=None, theta=None):
@@ -120,22 +140,23 @@ def add_molecule(cell, mols, ml, sg, Rot_dicts, add_centre, frac_pos=None, theta
     rot_ind = ml[2]
     tag = ml[3]
 
-    """
-    print(sg.name, sg.number)
-    for n, s in enumerate(sg.sites):
-       print(n, s.letter)
-    print("mol_ind is", mol_ind)
-    print("site_ind is", site_ind)
-    print("rot_ind is", rot_ind)
-    """
+    # print(sg.name, sg.number)
+    # for n, s in enumerate(sg.sites):
+    #     print(n, s.letter)
+    # print("mol_ind is", mol_ind)
+    # print("site_ind is", site_ind)
+    # print("rot_ind is", rot_ind)
+    # print("Rot_dicts", Rot_dicts.keys(), len(Rot_dicts))
 
     # 1. retrieve the site and update the cartesian operators of the site
+    # print("sg.sites", sg.sites)
     site = sg.sites[site_ind]
     site.update_Cops(cell)
 
     # 3. find the operators needed to replicate mol around the cell
     mult = site.mult
     ops = [wabgen.core.Operator(0, np.identity(3), (0, 0, 0))]
+    # print("ops:", ops)
     rsfp, vlist = site.randomised_fp()
     if frac_pos is not None:
         rsfp = frac_pos
@@ -181,7 +202,7 @@ def add_molecule(cell, mols, ml, sg, Rot_dicts, add_centre, frac_pos=None, theta
     if mol.std:
         R, Mopt = get_R_matrix(sg, mol, site, rot_ind, Rot_dicts[mol.name], theta=theta)
     else:
-        # TODO make this more general for now only works for p1
+        #TODO make this more general for now only works for p1
         assert mol.point_group_sch == "C1"
         R = random_rotation()
         Mopt = None
@@ -191,12 +212,27 @@ def add_molecule(cell, mols, ml, sg, Rot_dicts, add_centre, frac_pos=None, theta
 
     # 4. loop over list of operators adding symmetry equivalent molecules
     mc_fo = [x + rsfp for x in mc_frac]
+
     for j, op in enumerate(ops):
         for i in range(0, len(mc_fo)):
+            if mol.constraint is not None:
+                if mol.species[i] == "X":
+                    continue
+
             # mc = apply_op(op, mc_fo[i])     switched to no wrapping of fractional coordinates
             mc = np.dot(op.matrix, mc_fo[i]) + op.t
-            cell.add_atom(label=mol.species[i], fracCoords = [0,0,0], tag=tag, molName=mol.name, key=j, Mopt=Mopt)
-            cell.atoms[-1].set_position(fracCoords = mc, modulo = False)
+            cell.add_atom(
+               label=mol.species[i],
+               fracCoords=[0, 0, 0],
+               tag=tag,
+               molName=mol.name,
+               key=j,
+               Mopt=Mopt
+            )
+            cell.atoms[-1].set_position(
+               fracCoords=mc,
+               modulo=False
+            )
             cell.atoms[-1].set_repeat_op(op)
         # if merges are needed add a U atom at the centre of each cell
         if add_centre:
@@ -223,27 +259,32 @@ def make_cell(mols, sg_ind, perm, V_dist, cell_abc, Rot_dicts, add_centre, ntrie
     # 1. make the unit cell itself. Random if not explicity specified. Enforce Symmetry.
     cell = gen_rand_cell(cell_abc)
     sg = wabgen.core.SG(symm.retrieve_symmetry_group(sg_ind, reduce_to_prim=True), cell=cell)
+    # print("cell:", cell)
+    # print("sg:", sg)
+    # print("sg_ind:", sg_ind)
     if len(cell_abc) == 0:
         cell = scale_cell(cell, V_dist)
     cell.sg_num = sg.number
-    print("cell is", cell)
+    # print("cell is", cell)
 
     all_details = []
     # 2. split the permutation into symmetry equivalent molecules to be added.
     mol_list = perm2mol_list(perm)
+    # print("mol_list:", mol_list)
 
     # printing
     if False:
         for mol in mols:
             print(mol.name, mol.Otype, mol.number)
-        print("perm is")
-        pp.pprint(perm)
+        # print("perm is")
+        # pp.pprint(perm)
 
-        print("mol_list is")
-        pp.pprint(mol_list)
+        # print("mol_list is")
+        # pp.pprint(mol_list)
 
     # 3. loop over molecules to be added adding them one by one
     for h, ml in enumerate(mol_list):
+        # print(h, ml)  # ml: [mol_index, site_index, rot_index, tag]
         cell, details = add_molecule(cell, mols, ml, sg, Rot_dicts, add_centre)
         all_details.append(details)
 
