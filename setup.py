@@ -27,7 +27,7 @@ setup(
         ],
     },
     package_data={
-        'wabgen': ['data/**/*'],
+        'wabgen': ['data/**/*', 'data/rot_normalisers/.gitkeep'],
     },
     include_package_data=True,
     python_requires='>=3.10'
